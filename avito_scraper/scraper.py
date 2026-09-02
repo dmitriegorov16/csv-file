@@ -36,6 +36,8 @@ from urllib.parse import urljoin, urlparse
 
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PWTimeoutError
 
+import captcha_solver
+
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 URLS_FILE = DATA_DIR / "urls.jsonl"       # очередь ссылок на объявления
@@ -142,9 +144,10 @@ def collect_links(start_url: str, pages: int, delay: tuple[float, float], headle
                     print("  -> таймаут загрузки, пропускаю страницу")
                     continue
 
-                if is_blocked(page):
-                    print("  -> похоже на антибот/капчу. Останавливаюсь, попробуйте позже "
-                          "или запустите с --headless=false и решите капчу вручную.")
+                if not try_unblock(page, delay):
+                    print("  -> похоже на антибот/капчу, автоматически решить не удалось. "
+                          "Останавливаюсь, попробуйте позже или запустите с --no-headless "
+                          "и решите капчу вручную.")
                     break
 
                 human_delay(*delay)
@@ -189,6 +192,21 @@ def is_blocked(page: Page) -> bool:
         pass
     markers = ["captcha", "доступ ограничен", "подтвердите, что вы не робот", "проверка браузера"]
     return any(m in title or m in content for m in markers)
+
+
+def try_unblock(page: Page, delay: tuple[float, float]) -> bool:
+    """Если страница заблокирована и настроен RUCAPTCHA_API_KEY — пробует
+    решить капчу и перезагрузить страницу. Возвращает True, если после
+    попытки страница больше не выглядит заблокированной."""
+    if not is_blocked(page):
+        return True
+    if captcha_solver.solve_if_present(page):
+        human_delay(*delay)
+        try:
+            page.reload(wait_until="domcontentloaded", timeout=30000)
+        except PWTimeoutError:
+            pass
+    return not is_blocked(page)
 
 
 # --------------------------------------------------------------------------
@@ -264,15 +282,15 @@ def extract_breadcrumbs(page: Page) -> list[str]:
     return [i.inner_text().strip() for i in items if i.inner_text().strip()]
 
 
-def parse_item(page: Page, url: str, item_id: int) -> Optional[Listing]:
+def parse_item(page: Page, url: str, item_id: int, delay: tuple[float, float]) -> Optional[Listing]:
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
     except PWTimeoutError:
         print(f"  -> таймаут при загрузке {url}")
         return None
 
-    if is_blocked(page):
-        print(f"  -> заблокировано (антибот/капча) на {url}")
+    if not try_unblock(page, delay):
+        print(f"  -> заблокировано (антибот/капча), решить не удалось: {url}")
         return None
 
     # объявление могло быть снято с публикации
@@ -384,7 +402,7 @@ def scrape(limit: Optional[int], delay: tuple[float, float], headless: bool) -> 
             processed = 0
             for url in todo:
                 print(f"[scrape] ({processed + 1}/{len(todo)}) {url}")
-                listing = parse_item(page, url, state["next_id"])
+                listing = parse_item(page, url, state["next_id"], delay)
                 human_delay(*delay)
 
                 if listing is None:
