@@ -38,7 +38,17 @@ DATA_DIR = BASE_DIR / "data"
 WORKING_FILE = DATA_DIR / "working_proxies.txt"
 
 # Публичные списки. Отдаются как обычные текстовые файлы, обновляются часто.
+# Публичные списки. SOCKS5 идёт первым не случайно: обычные HTTP-прокси
+# часто вообще не умеют CONNECT для HTTPS, а Avito работает только по
+# HTTPS — то есть такой адрес бесполезен, даже когда он жив. SOCKS
+# туннелирует TCP как есть, поэтому для нашей задачи подходит лучше.
 SOURCES = [
+    ("socks5", "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt"),
+    ("socks5", "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt"),
+    ("socks5", "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt"),
+    ("socks4", "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt"),
+    ("socks5", "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies"
+               "&protocol=socks5&proxy_format=protocolipport&format=text"),
     ("http", "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt"),
     ("http", "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt"),
     ("http", "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt"),
@@ -128,7 +138,8 @@ def harvest(limit: int = 3000, use_cache: bool = True) -> list[str]:
     found: list[str] = []
     seen: set[str] = set()
     for scheme, url in SOURCES:
-        name = url.rsplit("/", 1)[-1]
+        name = url.split("?")[0].rsplit("/", 1)[-1]
+        name = f"{scheme}/{name}"
         print(f"  ... {name}", end="", flush=True)
         try:
             text = _download(url)

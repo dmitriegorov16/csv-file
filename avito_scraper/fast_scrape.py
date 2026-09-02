@@ -265,14 +265,44 @@ class ProxyRing:
             return len(self.servers)
 
 
+try:
+    import requests
+    HAVE_REQUESTS = True
+except ImportError:            # без requests остаются только HTTP-прокси
+    HAVE_REQUESTS = False
+
+
+def _proxy_dict(server: str) -> dict:
+    # socks5h означает "резолвить DNS на стороне прокси" — так надёжнее
+    # и не светит наружу, какие домены мы запрашиваем
+    if server.startswith("socks5://"):
+        server = "socks5h://" + server[len("socks5://"):]
+    return {"http": server, "https": server}
+
+
 def fetch(server: str, url: str, timeout: int):
-    """Возвращает (html, '') либо ('', причина)."""
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({"http": server, "https": server}))
+    """Возвращает (html, '') либо ('', причина).
+
+    SOCKS-прокси качаются через requests+PySocks: urllib их не умеет
+    вообще, а именно они для нас важнее всего — обычные HTTP-прокси часто
+    не поддерживают CONNECT, без которого HTTPS (а Avito только по HTTPS)
+    невозможен в принципе."""
+    if server.startswith("socks") and not HAVE_REQUESTS:
+        return "", "нет requests для socks"
+
     try:
-        with opener.open(urllib.request.Request(url, headers=HEADERS),
-                         timeout=timeout) as response:
-            body = response.read().decode("utf-8", "replace")
+        if HAVE_REQUESTS:
+            response = requests.get(url, headers=HEADERS, proxies=_proxy_dict(server),
+                                    timeout=timeout, allow_redirects=True)
+            if response.status_code != 200:
+                return "", f"HTTP {response.status_code}"
+            body = response.text
+        else:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": server, "https": server}))
+            with opener.open(urllib.request.Request(url, headers=HEADERS),
+                             timeout=timeout) as response:
+                body = response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         return "", f"HTTP {exc.code}"
     except Exception as exc:
