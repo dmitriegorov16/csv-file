@@ -60,6 +60,38 @@ def item_ids_from_queue(limit: int = 3) -> list[str]:
     return ids
 
 
+def settle(page, attempts: int = 10) -> bool:
+    """После прохождения проверки Avito сам перезагружает страницу (и не
+    один раз), поэтому evaluate/fetch могут попасть в момент навигации и
+    получить "Execution context was destroyed". Ждём, пока вкладка
+    перестанет дёргаться."""
+    for attempt in range(attempts):
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except Exception:
+            pass
+        try:
+            page.evaluate("1")
+            return True
+        except Exception:
+            page.wait_for_timeout(1500)
+    return False
+
+
+def fetch_via_context(page, path: str) -> dict:
+    """Запрос через APIRequestContext браузера: те же куки и прокси, но
+    без привязки к вкладке — навигация такому запросу не мешает."""
+    url = "https://www.avito.ru" + path
+    try:
+        response = page.context.request.get(
+            url, headers={"Accept": "application/json, text/plain, */*",
+                          "Referer": page.url}, timeout=25000)
+        text = response.text()
+        return {"status": response.status, "len": len(text), "body": text[:3000]}
+    except Exception as exc:
+        return {"status": -1, "len": 0, "body": f"{type(exc).__name__}: {exc}"}
+
+
 def fetch_in_page(page, path: str) -> dict:
     """Выполняет fetch прямо во вкладке — с её куками и отпечатком."""
     return page.evaluate(
@@ -101,19 +133,42 @@ def main() -> None:
         else:
             print(f"  проверки не потребовалось: {page.title()!r}")
 
-        print("\n[test] дёргаю API изнутри вкладки:\n")
+        if not settle(page):
+            print("  вкладка так и не успокоилась после проверки — продолжаю осторожно")
+        print(f"  текущая страница: {page.url}")
+
+        print("\n[test] дёргаю API с куками этой сессии:\n")
         good = []
         for item_id in item_ids:
             for template in ENDPOINT_TEMPLATES:
                 path = template.format(id=item_id)
-                result = fetch_in_page(page, path)
+                result = fetch_via_context(page, path)
                 status, length = result["status"], result["len"]
                 print(f"  {status:>5}  {path}  ({length} байт)")
                 if status == 200 and length > 50:
                     good.append((path, result["body"]))
                     preview = " ".join(result["body"][:300].split())
                     print(f"         {preview}")
+                elif status not in (200, -1):
+                    preview = " ".join(result["body"][:120].split())
+                    if preview:
+                        print(f"         {preview}")
                 human_delay(0.5, 1.5)
+
+        # контрольная проверка тем же fetch изнутри вкладки — у него
+        # отпечаток самой страницы, вдруг API смотрит и на это
+        if not good:
+            print("\n[test] то же самое, но fetch() изнутри вкладки:\n")
+            for template in ENDPOINT_TEMPLATES[:1]:
+                path = template.format(id=item_ids[0])
+                try:
+                    result = fetch_in_page(page, path)
+                except Exception as exc:
+                    print(f"    не вышло: {type(exc).__name__}")
+                    continue
+                print(f"  {result['status']:>5}  {path}  ({result['len']} байт)")
+                if result["status"] == 200 and result["len"] > 50:
+                    good.append((path, result["body"]))
 
         if good:
             path, body = good[0]
