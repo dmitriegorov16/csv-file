@@ -233,16 +233,18 @@ def is_blocked(page: Page) -> bool:
 
 def try_unblock(page: Page, delay: tuple[float, float]) -> bool:
     """Если страница заблокирована и настроен RUCAPTCHA_API_KEY — пробует
-    решить капчу и перезагрузить страницу. Возвращает True, если после
-    попытки страница больше не выглядит заблокированной."""
+    решить капчу. Возвращает True, если после попытки страница больше не
+    выглядит заблокированной.
+
+    solve_if_present() сам дожидается перезагрузки, которую Avito делает
+    после успешной проверки (по cookie с очень коротким Max-Age) — поэтому
+    здесь не делаем свой дополнительный page.reload(), это может опоздать
+    и увидеть уже протухшую cookie."""
     if not is_blocked(page):
         return True
     if captcha_solver.solve_if_present(page):
-        human_delay(*delay)
-        try:
-            page.reload(wait_until="domcontentloaded", timeout=30000)
-        except PWTimeoutError:
-            pass
+        return True
+    human_delay(*delay)
     return not is_blocked(page)
 
 
