@@ -476,17 +476,27 @@ def main() -> None:
         for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1])[:8]:
             print(f"  {count:>5}  {reason}")
 
-        firewall = reasons.get("фаервол", 0) + reasons.get("HTTP 429", 0) + reasons.get("HTTP 439", 0)
-        network = sum(c for r, c in reasons.items()
-                      if r in ("timeout", "TimeoutError", "URLError", "RemoteDisconnected",
-                               "ConnectionResetError", "OSError", "socket.timeout",
-                               "IncompleteRead", "BadStatusLine", "ProxyError"))
-        if firewall > total_attempts * 0.3:
-            print("\nВИНОВАТ AVITO: прокси доходят до сайта, но он их блокирует.")
-        elif network > total_attempts * 0.5:
-            print("\nВИНОВАТЫ ПРОКСИ: до Avito дело не доходит — адреса мертвы "
-                  "или не умеют HTTPS. Проверить можно так:\n"
-                  "  python proxy_probe.py")
+        # Важно не общее число отказов, а доля тех, кто ДОШЁЛ до Avito и
+        # был им отвергнут: именно она показывает, есть ли смысл перебирать
+        # адреса дальше. Ответ сервера (HTTP ...) означает, что связь была.
+        reached = sum(c for r, c in reasons.items() if r.startswith("HTTP ")
+                      or r in ("фаервол", "без данных"))
+        blocked = sum(c for r, c in reasons.items()
+                      if r in ("фаервол", "HTTP 429", "HTTP 439", "HTTP 403"))
+        unreachable = total_attempts - reached
+
+        print(f"\n  до Avito не дошли: {unreachable} "
+              f"({unreachable / total_attempts * 100:.0f}%) — мёртвые адреса")
+        print(f"  дошли до Avito:    {reached} "
+              f"({reached / total_attempts * 100:.0f}%), из них заблокировано {blocked}")
+
+        if reached and blocked == reached and ok_count == 0:
+            print("\nВЫВОД: до Avito доходят единицы, и он блокирует ВСЕХ до одного.")
+            print("Перебирать публичные списки дальше бессмысленно — их адреса")
+            print("у Avito давно в чёрном списке. Нужен приватный/резидентский IP.")
+        elif not reached:
+            print("\nВЫВОД: ни один адрес не дошёл до Avito — списки нерабочие "
+                  "или сервер не выпускает трафик на их порты.")
     if speed > 0:
         print(f"При такой скорости 30000 займут ~{30000 / speed / 60:.1f} ч")
     print(f"CSV: {OUTPUT_CSV}")
