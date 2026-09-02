@@ -189,9 +189,17 @@ def collect_links(start_url: str, pages: int, delay: tuple[float, float], headle
 
                 human_delay(*delay)
 
-                hrefs = page.eval_on_selector_all(
-                    "a[href]", "els => els.map(e => e.href)"
-                )
+                try:
+                    hrefs = page.eval_on_selector_all(
+                        "a[href]", "els => els.map(e => e.href)"
+                    )
+                except Exception:
+                    # ещё одна навигация в процессе (SPA-редирект и т.п.) — даём
+                    # странице осесть и пробуем один раз ещё
+                    page.wait_for_load_state("domcontentloaded", timeout=15000)
+                    hrefs = page.eval_on_selector_all(
+                        "a[href]", "els => els.map(e => e.href)"
+                    )
                 found_on_page = 0
                 for href in hrefs:
                     href = href.split("?")[0]
@@ -243,6 +251,14 @@ def try_unblock(page: Page, delay: tuple[float, float]) -> bool:
     if not is_blocked(page):
         return True
     if captcha_solver.solve_if_present(page):
+        # после успешной проверки Avito может ещё редиректить/дохлопывать
+        # SPA-навигацию — дадим странице осесть, иначе следующий же
+        # eval_on_selector_all падает с "Execution context was destroyed"
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except PWTimeoutError:
+            pass
+        human_delay(*delay)
         return True
     human_delay(*delay)
     return not is_blocked(page)
