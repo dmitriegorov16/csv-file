@@ -69,15 +69,39 @@ def human_delay(min_s: float, max_s: float) -> None:
     time.sleep(random.uniform(min_s, max_s))
 
 
+def _proxy_config() -> Optional[dict]:
+    """Собирает конфиг прокси для Playwright из переменных окружения.
+    AVITO_PROXY_SERVER — например "http://host:3071" или "socks5://host:3072".
+    AVITO_PROXY_USERNAME / AVITO_PROXY_PASSWORD — опционально, если прокси
+    с авторизацией по логину/паролю (а не по IP)."""
+    import os
+    server = os.environ.get("AVITO_PROXY_SERVER", "").strip()
+    if not server:
+        return None
+    config = {"server": server}
+    username = os.environ.get("AVITO_PROXY_USERNAME", "").strip()
+    password = os.environ.get("AVITO_PROXY_PASSWORD", "").strip()
+    if username:
+        config["username"] = username
+    if password:
+        config["password"] = password
+    return config
+
+
 def launch_browser(pw, headless: bool):
     # Позволяет указать путь к уже установленному Chromium через переменную
     # окружения (например, в песочницах с предустановленным браузером),
     # не трогая обычный playwright-managed браузер в Codespaces.
     import os
     executable_path = os.environ.get("PLAYWRIGHT_CHROMIUM_PATH")
+    kwargs = {"headless": headless}
     if executable_path:
-        return pw.chromium.launch(headless=headless, executable_path=executable_path)
-    return pw.chromium.launch(headless=headless)
+        kwargs["executable_path"] = executable_path
+    proxy = _proxy_config()
+    if proxy:
+        kwargs["proxy"] = proxy
+        print(f"[proxy] использую {proxy['server']}")
+    return pw.chromium.launch(**kwargs)
 
 
 BLOCKED_RESOURCE_TYPES = {"image", "media", "font", "stylesheet"}
