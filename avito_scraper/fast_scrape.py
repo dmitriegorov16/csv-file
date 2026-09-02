@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
 """
-Быстрый сбор карточек прямыми HTTP-запросами — без браузера и капчи.
+Сбор карточек Avito прямыми HTTP-запросами через пул прокси.
 
-Логика всей связки:
+Главный принцип: проверка прокси и полезная работа — одно и то же
+действие. Отдельная фаза "проверим 4000 адресов, потом начнём собирать"
+бессмысленна: она идёт минуты, а бесплатный прокси за это время успевает
+умереть, и к началу сбора список уже протух. Поэтому здесь просто берётся
+очередной адрес и через него качается настоящая карточка:
 
-    scraper.py sitemap  ->  ссылки на объявления (бесплатно, из карт сайта)
-    proxy_pool.py       ->  прокси, с которых Avito отдаёт данные обычным
-                            HTTP-запросом (проверка требует og:title в теле)
-    fast_scrape.py      ->  качает карточки и пишет CSV
+    получилось  -> готовая строка CSV
+    не вышло    -> адрес штрафуется, берём следующий
 
-Почему это работает без капчи: страницы объявлений отрендерены на сервере
-для поисковиков, поэтому все нужные поля лежат прямо в HTML (og-теги,
-JSON-LD, разметка). Если IP не сожжён, страница приходит целиком обычным
-запросом — а прокси с сожжёнными IP отсеиваются ещё на этапе проверки.
+Ни один запрос не тратится впустую, окна протухания не существует.
 
-Прокси ротируются автоматически: адрес, который начал отдавать блокировку
-или отвалился, откладывается, берётся следующий.
+Потоки работают параллельно, каждый со своим прокси, поэтому нестабильность
+отдельных адресов перестаёт быть проблемой: пул большой, живые находятся
+сами собой. Когда живых остаётся мало, список докачивается на ходу.
 
-    python fast_scrape.py --limit 100
-    python fast_scrape.py                 # вся очередь
+    python fast_scrape.py --limit 100          # первые 100 из очереди
+    python fast_scrape.py                      # вся очередь
+    python fast_scrape.py --workers 40         # больше параллелизма
 """
 
 from __future__ import annotations
@@ -27,17 +28,23 @@ import argparse
 import csv
 import html as html_module
 import json
+import queue
 import random
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict
+from typing import Optional
 
 import proxy_pool
 from scraper import (CSV_FIELDS, DATA_DIR, OUTPUT_CSV, URLS_FILE, Listing,
-                     capitalize_city, load_state, save_state)
+                     capitalize_city)
+
+DONE_FILE = DATA_DIR / "done.txt"          # append-only: по строке на ссылку
+COUNTER_FILE = DATA_DIR / "counter.json"   # только следующий id
 
 HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -48,16 +55,18 @@ HEADERS = {
 
 FIREWALL_MARKERS = ("Доступ ограничен", "js-firewall-form", "проверка безопасности")
 
-META_RE_CACHE: dict[str, re.Pattern] = {}
-ITEM_ID_RE = re.compile(r"_(\d+)$")
+META_RE_CACHE: dict = {}
 JSON_LD_RE = re.compile(
     r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
     re.DOTALL | re.IGNORECASE)
 TAG_RE = re.compile(r"<[^>]+>")
 
 
+# --------------------------------------------------------------------------
+# Разбор HTML: чистые функции, тестируются без сети (см. test_parse.py)
+# --------------------------------------------------------------------------
+
 def meta_content(page_html: str, attr: str, value: str) -> str:
-    """Достаёт content из <meta ...>, независимо от порядка атрибутов."""
     key = f"{attr}={value}"
     if key not in META_RE_CACHE:
         META_RE_CACHE[key] = re.compile(
@@ -76,24 +85,18 @@ def strip_tags(fragment: str) -> str:
 
 
 def block_text(page_html: str, marker: str) -> str:
-    """Весь текст элемента с data-marker="...", включая вложенные теги.
+    """Весь текст элемента с data-marker, включая вложенные теги.
 
-    Наивный regex "до первого закрывающего тега" здесь не годится:
-    описание объявления состоит из нескольких абзацев, и тогда терялось
-    бы всё после первого </p>. Поэтому находим открывающий тег и идём по
-    HTML, считая вложенность тегов того же имени."""
+    Наивное "до первого закрывающего тега" тут не годится: описание
+    состоит из нескольких абзацев, и всё после первого </p> терялось бы."""
     match = re.search(r'<(\w+)[^>]*data-marker=["\']%s["\'][^>]*>' % re.escape(marker),
                       page_html)
     if not match:
         return ""
-    tag = match.group(1)
-    start = match.end()
-
+    tag, start = match.group(1), match.end()
     open_re = re.compile(r"<%s\b" % tag, re.IGNORECASE)
     close_re = re.compile(r"</%s\s*>" % tag, re.IGNORECASE)
-
-    depth = 1
-    position = start
+    depth, position = 1, start
     limit = min(len(page_html), start + 200000)
     while position < limit:
         next_open = open_re.search(page_html, position, limit)
@@ -117,22 +120,19 @@ def extract_json_ld(page_html: str) -> dict:
             data = json.loads(raw.strip())
         except Exception:
             continue
-        candidates = data if isinstance(data, list) else [data]
-        for item in candidates:
+        for item in (data if isinstance(data, list) else [data]):
             if isinstance(item, dict) and item.get("@type") in ("Product", "Offer", "Vehicle", "Car"):
                 return item
     return {}
 
 
 def parse_html(page_html: str, url: str, item_id: int) -> Listing:
-    """Чистая функция: HTML -> строка CSV. Тестируется без сети."""
     json_ld = extract_json_ld(page_html)
     offers = json_ld.get("offers") if isinstance(json_ld.get("offers"), dict) else {}
 
     title = (meta_content(page_html, "property", "og:title")
              or block_text(page_html, "item-view/title-info")
              or json_ld.get("name", ""))
-    # Avito добавляет к og:title хвост вида " | Авито" — он не нужен
     title = re.sub(r"\s*\|\s*Авито\s*$", "", title).strip()
 
     content = (block_text(page_html, "item-view/item-description")
@@ -167,12 +167,10 @@ def parse_html(page_html: str, url: str, item_id: int) -> Listing:
         city = address.split(",")[0]
     city = capitalize_city(city)
 
-    category = ""
-    breadcrumbs = re.findall(r'itemprop=["\']name["\'][^>]*>([^<]{1,80})<', page_html)
-    crumbs = [strip_tags(b) for b in breadcrumbs if strip_tags(b)]
+    crumbs = [strip_tags(b) for b in
+              re.findall(r'itemprop=["\']name["\'][^>]*>([^<]{1,80})<', page_html)]
     crumbs = [c for c in crumbs if c and c != title]
-    if crumbs:
-        category = crumbs[-1]
+    category = crumbs[-1] if crumbs else ""
     if not category and isinstance(json_ld.get("category"), str):
         category = json_ld["category"]
 
@@ -183,94 +181,127 @@ def parse_html(page_html: str, url: str, item_id: int) -> Listing:
     )
 
 
-class RotatingFetcher:
-    """Качает страницы через список прокси, отбраковывая испортившиеся."""
+# --------------------------------------------------------------------------
+# Прогресс: append-only, чтобы не переписывать список на 30000 строк
+# --------------------------------------------------------------------------
 
-    def __init__(self, proxies: list[str], timeout: int = 20):
-        self.proxies = list(proxies)
-        random.shuffle(self.proxies)
-        self.timeout = timeout
-        self.index = 0
-        self.failures: dict[str, int] = {}
+def load_done() -> set:
+    done = set()
+    if DONE_FILE.exists():
+        done.update(line.strip() for line in
+                    DONE_FILE.read_text(encoding="utf-8").splitlines() if line.strip())
+    # перенос прогресса со старого формата (весь список внутри state.json)
+    old_state = DATA_DIR / "state.json"
+    if old_state.exists():
+        try:
+            data = json.loads(old_state.read_text(encoding="utf-8"))
+            done.update(data.get("done_urls", []))
+        except Exception:
+            pass
+    return done
+
+
+def load_counter(fallback: int = 1) -> int:
+    if COUNTER_FILE.exists():
+        try:
+            return int(json.loads(COUNTER_FILE.read_text(encoding="utf-8"))["next_id"])
+        except Exception:
+            pass
+    old_state = DATA_DIR / "state.json"
+    if old_state.exists():
+        try:
+            return int(json.loads(old_state.read_text(encoding="utf-8"))["next_id"])
+        except Exception:
+            pass
+    return fallback
+
+
+def save_counter(next_id: int) -> None:
+    COUNTER_FILE.write_text(json.dumps({"next_id": next_id}), encoding="utf-8")
+
+
+# --------------------------------------------------------------------------
+# Пул прокси: без предварительной проверки, отбраковка по ходу дела
+# --------------------------------------------------------------------------
+
+class ProxyRing:
+    def __init__(self, servers: list, strikes: int = 2):
+        self.servers = list(servers)
+        random.shuffle(self.servers)
+        self.strikes = strikes
+        self.failures: dict = {}
+        self.lock = threading.Lock()
+        self.position = 0
+
+    def take(self) -> Optional[str]:
+        with self.lock:
+            if not self.servers:
+                return None
+            self.position = (self.position + 1) % len(self.servers)
+            return self.servers[self.position]
+
+    def punish(self, server: str) -> None:
+        with self.lock:
+            self.failures[server] = self.failures.get(server, 0) + 1
+            if self.failures[server] >= self.strikes and server in self.servers:
+                self.servers.remove(server)
+                self.failures.pop(server, None)
+
+    def reward(self, server: str) -> None:
+        with self.lock:
+            self.failures.pop(server, None)
+
+    def refill(self, servers: list) -> int:
+        with self.lock:
+            known = set(self.servers)
+            fresh = [s for s in servers if s not in known]
+            random.shuffle(fresh)
+            self.servers.extend(fresh)
+            return len(fresh)
 
     @property
-    def current(self) -> str:
-        return self.proxies[self.index % len(self.proxies)]
-
-    def rotate(self, reason: str) -> bool:
-        bad = self.current
-        self.failures[bad] = self.failures.get(bad, 0) + 1
-        if self.failures[bad] >= 3:
-            print(f"  [proxy] выбрасываю {bad} ({reason}, 3 неудачи подряд)")
-            self.proxies.remove(bad)
-            self.failures.pop(bad, None)
-            if not self.proxies:
-                return False
-            self.index = self.index % len(self.proxies)
-        else:
-            self.index = (self.index + 1) % len(self.proxies)
-        return True
-
-    def get(self, url: str) -> tuple[str, str]:
-        """Возвращает (html, ''), либо ('', причина ошибки)."""
-        for _ in range(min(6, len(self.proxies) * 2)):
-            server = self.current
-            opener = urllib.request.build_opener(
-                urllib.request.ProxyHandler({"http": server, "https": server}))
-            try:
-                with opener.open(urllib.request.Request(url, headers=HEADERS),
-                                 timeout=self.timeout) as response:
-                    body = response.read().decode("utf-8", "replace")
-            except urllib.error.HTTPError as exc:
-                if not self.rotate(f"HTTP {exc.code}"):
-                    return "", "прокси кончились"
-                continue
-            except Exception as exc:
-                if not self.rotate(type(exc).__name__):
-                    return "", "прокси кончились"
-                continue
-
-            if any(marker in body for marker in FIREWALL_MARKERS):
-                if not self.rotate("фаервол"):
-                    return "", "прокси кончились"
-                continue
-
-            self.failures.pop(server, None)
-            return body, ""
-        return "", "не удалось получить страницу"
+    def alive(self) -> int:
+        with self.lock:
+            return len(self.servers)
 
 
-def ensure_proxies(needed: int) -> list[str]:
-    proxies = proxy_pool.load_working()
-    if proxies:
-        print(f"[proxy] беру сохранённые: {len(proxies)}")
-        return proxies
-    print("[proxy] сохранённых нет — ищу рабочие")
-    servers = proxy_pool.harvest()
-    proxies = proxy_pool.find_working(servers, needed)
-    if proxies:
-        proxy_pool.save_working(proxies)
-    return proxies
+def fetch(server: str, url: str, timeout: int):
+    """Возвращает (html, '') либо ('', причина)."""
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": server, "https": server}))
+    try:
+        with opener.open(urllib.request.Request(url, headers=HEADERS),
+                         timeout=timeout) as response:
+            body = response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return "", f"HTTP {exc.code}"
+    except Exception as exc:
+        return "", type(exc).__name__
+    if any(marker in body for marker in FIREWALL_MARKERS):
+        return "", "фаервол"
+    if "og:title" not in body:
+        return "", "без данных"
+    return body, ""
 
+
+# --------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--limit", type=int, default=None,
-                        help="сколько объявлений обработать за запуск")
-    parser.add_argument("--proxies-needed", type=int, default=5,
-                        help="сколько рабочих прокси искать, если сохранённых нет")
-    parser.add_argument("--delay-min", type=float, default=0.5)
-    parser.add_argument("--delay-max", type=float, default=1.5)
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--workers", type=int, default=25)
+    parser.add_argument("--timeout", type=int, default=15)
+    parser.add_argument("--attempts", type=int, default=6,
+                        help="сколько прокси перепробовать на одну карточку")
     args = parser.parse_args()
 
     if not URLS_FILE.exists():
-        sys.exit("Нет очереди ссылок. Сначала: python scraper.py sitemap --category avtomobili")
+        sys.exit("Нет очереди. Сначала: python scraper.py sitemap --category avtomobili")
 
     all_urls = [json.loads(line)["url"]
                 for line in URLS_FILE.read_text(encoding="utf-8").splitlines() if line.strip()]
-    state = load_state()
-    done = set(state["done_urls"])
+    done = load_done()
     todo = [u for u in all_urls if u not in done]
     if args.limit is not None:
         todo = todo[:args.limit]
@@ -278,51 +309,108 @@ def main() -> None:
         print("Всё из очереди уже обработано.")
         return
 
-    proxies = ensure_proxies(args.proxies_needed)
-    if not proxies:
-        sys.exit("Рабочих прокси не найдено. Запустите: python proxy_pool.py --limit 5000")
+    print("[1/2] качаю списки прокси")
+    servers = proxy_pool.harvest()
+    if not servers:
+        sys.exit("Не удалось скачать списки прокси.")
+    ring = ProxyRing(servers)
+    print(f"      адресов в пуле: {ring.alive}\n")
 
-    fetcher = RotatingFetcher(proxies)
+    print(f"[2/2] собираю {len(todo)} карточек в {args.workers} потоков "
+          f"(готово ранее: {len(done)})\n")
+
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    write_header = not OUTPUT_CSV.exists()
+    tasks = queue.Queue()
+    for url in todo:
+        tasks.put(url)
+    results = queue.Queue()
+    stop = threading.Event()
 
-    print(f"[scrape] к обработке: {len(todo)} (готово ранее: {len(done)})\n")
-    ok_count = fail_count = 0
-
-    with OUTPUT_CSV.open("a", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
-        if write_header:
-            writer.writeheader()
-
-        for number, url in enumerate(todo, 1):
-            page_html, error = fetcher.get(url)
-            if error:
-                fail_count += 1
-                print(f"  [{number}/{len(todo)}] ОШИБКА {error}: {url[:80]}")
-                if error == "прокси кончились":
-                    print("\nПрокси закончились. Запустите proxy_pool.py за новой порцией.")
+    def worker() -> None:
+        while not stop.is_set():
+            try:
+                url = tasks.get_nowait()
+            except queue.Empty:
+                return
+            for _ in range(args.attempts):
+                if stop.is_set():
+                    return
+                server = ring.take()
+                if server is None:
+                    results.put((url, None, "прокси кончились"))
                     break
-                continue
-
-            listing = parse_html(page_html, url, state["next_id"])
-            if not listing.title:
-                fail_count += 1
-                print(f"  [{number}/{len(todo)}] пусто (нет заголовка): {url[:80]}")
+                body, error = fetch(server, url, args.timeout)
+                if body:
+                    ring.reward(server)
+                    results.put((url, body, ""))
+                    break
+                ring.punish(server)
             else:
-                writer.writerow(asdict(listing))
-                handle.flush()
-                state["next_id"] += 1
-                ok_count += 1
-                print(f"  [{number}/{len(todo)}] {listing.title[:60]} | "
-                      f"{listing.price or '—'} | {listing.city or '—'}")
+                results.put((url, None, "не вышло ни через один прокси"))
 
-            done.add(url)
-            state["done_urls"] = sorted(done)
-            save_state(state)
-            time.sleep(random.uniform(args.delay_min, args.delay_max))
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(args.workers)]
+    for thread in threads:
+        thread.start()
 
-    print(f"\n[scrape] собрано: {ok_count}, неудач: {fail_count}. "
-          f"Всего строк в {OUTPUT_CSV.name}: {state['next_id'] - 1}")
+    next_id = load_counter()
+    write_header = not OUTPUT_CSV.exists()
+    ok_count = fail_count = 0
+    started = time.time()
+
+    try:
+        with OUTPUT_CSV.open("a", newline="", encoding="utf-8") as handle, \
+                DONE_FILE.open("a", encoding="utf-8") as done_handle:
+            writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
+            if write_header:
+                writer.writeheader()
+
+            for number in range(1, len(todo) + 1):
+                while True:
+                    try:
+                        url, body, error = results.get(timeout=5)
+                        break
+                    except queue.Empty:
+                        if not any(t.is_alive() for t in threads):
+                            raise KeyboardInterrupt
+                        print(f"      ... живых прокси {ring.alive}, "
+                              f"собрано {ok_count}, неудач {fail_count}")
+
+                if body:
+                    listing = parse_html(body, url, next_id)
+                    writer.writerow(asdict(listing))
+                    handle.flush()
+                    next_id += 1
+                    ok_count += 1
+                    save_counter(next_id)
+                    print(f"  [{number}/{len(todo)}] {listing.title[:55]} | "
+                          f"{listing.price or '—'} | {listing.city or '—'}")
+                else:
+                    fail_count += 1
+                    if number % 10 == 0 or "кончились" in (error or ""):
+                        print(f"  [{number}/{len(todo)}] мимо ({error}), "
+                              f"живых прокси {ring.alive}")
+
+                done_handle.write(url + "\n")
+                done_handle.flush()
+
+                # пул истощился — докачиваем свежие списки на ходу
+                if ring.alive < args.workers:
+                    fresh = proxy_pool.harvest()
+                    added = ring.refill(fresh)
+                    print(f"      [пул] добавлено свежих адресов: {added} "
+                          f"(живых {ring.alive})")
+    except KeyboardInterrupt:
+        print("\nостановлено")
+    finally:
+        stop.set()
+
+    elapsed = time.time() - started
+    speed = ok_count / elapsed * 60 if elapsed else 0
+    print(f"\nСобрано: {ok_count}, неудач: {fail_count}, за {elapsed / 60:.1f} мин "
+          f"({speed:.0f} карточек/мин)")
+    if speed > 0:
+        print(f"При такой скорости 30000 займут ~{30000 / speed / 60:.1f} ч")
+    print(f"CSV: {OUTPUT_CSV}")
 
 
 if __name__ == "__main__":
