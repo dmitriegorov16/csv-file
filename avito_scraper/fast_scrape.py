@@ -326,6 +326,15 @@ def main() -> None:
     results = queue.Queue()
     stop = threading.Event()
 
+    # причины отказов: без них непонятно, кто виноват — мёртвые прокси,
+    # фаервол Avito или неумение прокси в HTTPS
+    reasons: dict = {}
+    reasons_lock = threading.Lock()
+
+    def note(reason: str) -> None:
+        with reasons_lock:
+            reasons[reason] = reasons.get(reason, 0) + 1
+
     def worker() -> None:
         while not stop.is_set():
             try:
@@ -344,6 +353,7 @@ def main() -> None:
                     ring.reward(server)
                     results.put((url, body, ""))
                     break
+                note(error)
                 ring.punish(server)
             else:
                 results.put((url, None, "не вышло ни через один прокси"))
@@ -408,6 +418,24 @@ def main() -> None:
     speed = ok_count / elapsed * 60 if elapsed else 0
     print(f"\nСобрано: {ok_count}, неудач: {fail_count}, за {elapsed / 60:.1f} мин "
           f"({speed:.0f} карточек/мин)")
+
+    if reasons:
+        total_attempts = sum(reasons.values())
+        print(f"\nПочему не вышло ({total_attempts} попыток через прокси):")
+        for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1])[:8]:
+            print(f"  {count:>5}  {reason}")
+
+        firewall = reasons.get("фаервол", 0) + reasons.get("HTTP 429", 0) + reasons.get("HTTP 439", 0)
+        network = sum(c for r, c in reasons.items()
+                      if r in ("timeout", "TimeoutError", "URLError", "RemoteDisconnected",
+                               "ConnectionResetError", "OSError", "socket.timeout",
+                               "IncompleteRead", "BadStatusLine", "ProxyError"))
+        if firewall > total_attempts * 0.3:
+            print("\nВИНОВАТ AVITO: прокси доходят до сайта, но он их блокирует.")
+        elif network > total_attempts * 0.5:
+            print("\nВИНОВАТЫ ПРОКСИ: до Avito дело не доходит — адреса мертвы "
+                  "или не умеют HTTPS. Проверить можно так:\n"
+                  "  python proxy_probe.py")
     if speed > 0:
         print(f"При такой скорости 30000 займут ~{30000 / speed / 60:.1f} ч")
     print(f"CSV: {OUTPUT_CSV}")
