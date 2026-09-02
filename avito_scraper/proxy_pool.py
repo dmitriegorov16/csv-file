@@ -61,7 +61,7 @@ HEADERS = {
 HOST_PORT_RE = re.compile(r"^(?:(\w+)://)?(\d{1,3}(?:\.\d{1,3}){3}):(\d{2,5})$")
 
 
-def _download(url: str, deadline: float = 20.0, max_bytes: int = 8_000_000) -> str:
+def _download(url: str, deadline: float = 45.0, max_bytes: int = 8_000_000) -> str:
     """Качает текстовый список с ЖЁСТКИМ ограничением по времени и размеру.
 
     Одного timeout у сокета мало: он отсчитывается заново на каждом
@@ -86,8 +86,45 @@ def _download(url: str, deadline: float = 20.0, max_bytes: int = 8_000_000) -> s
     return b"".join(chunks).decode("utf-8", "replace")
 
 
-def harvest(limit: int = 3000) -> list[str]:
+CACHE_FILE = DATA_DIR / "proxies_cache.txt"
+CACHE_TTL = 900  # 15 минут: список всё равно живёт недолго
+
+
+def _read_cache(ttl: float = CACHE_TTL) -> list:
+    """Свежий кэш списка адресов, если он есть.
+
+    Нужен потому, что сеть до источников может быть медленной или
+    нестабильной, и перекачивать одни и те же списки на каждом запуске
+    дороже, чем сам сбор."""
+    if not CACHE_FILE.exists():
+        return []
+    age = time.time() - CACHE_FILE.stat().st_mtime
+    if age > ttl:
+        return []
+    servers = [line.strip() for line in
+               CACHE_FILE.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if servers:
+        print(f"  [кэш] {len(servers)} адресов, возраст {age / 60:.0f} мин "
+              f"(перекачаю, когда станет старше {ttl / 60:.0f} мин)")
+    return servers
+
+
+def _write_cache(servers: list) -> None:
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        CACHE_FILE.write_text("\n".join(servers) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def harvest(limit: int = 3000, use_cache: bool = True) -> list[str]:
     """Скачивает публичные списки и возвращает адреса вида http://ip:port."""
+    if use_cache:
+        cached = _read_cache()
+        if cached:
+            random.shuffle(cached)
+            return cached[:limit]
+
     found: list[str] = []
     seen: set[str] = set()
     for scheme, url in SOURCES:
@@ -111,6 +148,8 @@ def harvest(limit: int = 3000) -> list[str]:
                 count += 1
         print(f"\r  [+] {name}: {count}      ")
 
+    if found:
+        _write_cache(found)
     random.shuffle(found)
     return found[:limit]
 
