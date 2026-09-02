@@ -80,7 +80,10 @@ def launch_browser(pw, headless: bool):
     return pw.chromium.launch(headless=headless)
 
 
-def new_context(pw_browser, headless_ua: Optional[str] = None):
+BLOCKED_RESOURCE_TYPES = {"image", "media", "font", "stylesheet"}
+
+
+def new_context(pw_browser, headless_ua: Optional[str] = None, block_resources: bool = True):
     ua = headless_ua or random.choice(USER_AGENTS)
     context = pw_browser.new_context(
         user_agent=ua,
@@ -92,6 +95,16 @@ def new_context(pw_browser, headless_ua: Optional[str] = None):
     context.add_init_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
     )
+    if block_resources:
+        # нам нужны только текст/цена/ссылки и URL картинки из meta-тега,
+        # сами байты картинок/шрифтов/css не нужны — экономит основную
+        # часть трафика (актуально при работе через платные прокси)
+        context.route(
+            "**/*",
+            lambda route: route.abort()
+            if route.request.resource_type in BLOCKED_RESOURCE_TYPES
+            else route.continue_(),
+        )
     return context
 
 
@@ -119,7 +132,7 @@ def save_state(state: dict) -> None:
 # Шаг 1: сбор ссылок на объявления со страниц поиска
 # --------------------------------------------------------------------------
 
-def collect_links(start_url: str, pages: int, delay: tuple[float, float], headless: bool) -> None:
+def collect_links(start_url: str, pages: int, delay: tuple[float, float], headless: bool, block_resources: bool = True) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     seen: set[str] = set()
     if URLS_FILE.exists():
@@ -130,7 +143,7 @@ def collect_links(start_url: str, pages: int, delay: tuple[float, float], headle
 
     with sync_playwright() as pw:
         browser = launch_browser(pw, headless)
-        context = new_context(browser)
+        context = new_context(browser, block_resources=block_resources)
         page = context.new_page()
 
         added = 0
@@ -364,7 +377,7 @@ def parse_item(page: Page, url: str, item_id: int, delay: tuple[float, float]) -
     )
 
 
-def scrape(limit: Optional[int], delay: tuple[float, float], headless: bool) -> None:
+def scrape(limit: Optional[int], delay: tuple[float, float], headless: bool, block_resources: bool = True) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not URLS_FILE.exists():
         print("Нет очереди ссылок. Сначала запустите: python scraper.py collect ...")
@@ -391,7 +404,7 @@ def scrape(limit: Optional[int], delay: tuple[float, float], headless: bool) -> 
     write_header = not OUTPUT_CSV.exists()
     with sync_playwright() as pw:
         browser = launch_browser(pw, headless)
-        context = new_context(browser)
+        context = new_context(browser, block_resources=block_resources)
         page = context.new_page()
 
         with OUTPUT_CSV.open("a", newline="", encoding="utf-8") as f:
@@ -445,6 +458,9 @@ def main() -> None:
     p_collect.add_argument("--delay-max", type=float, default=3.5)
     p_collect.add_argument("--headless", action="store_true", default=True)
     p_collect.add_argument("--no-headless", dest="headless", action="store_false")
+    p_collect.add_argument("--block-resources", action="store_true", default=True,
+                            help="не грузить картинки/шрифты/css (экономит трафик, включено по умолчанию)")
+    p_collect.add_argument("--no-block-resources", dest="block_resources", action="store_false")
 
     p_scrape = sub.add_parser("scrape", help="обойти очередь ссылок и заполнить CSV")
     p_scrape.add_argument("--limit", type=int, default=None, help="сколько объявлений обработать за этот запуск")
@@ -452,13 +468,16 @@ def main() -> None:
     p_scrape.add_argument("--delay-max", type=float, default=4.5)
     p_scrape.add_argument("--headless", action="store_true", default=True)
     p_scrape.add_argument("--no-headless", dest="headless", action="store_false")
+    p_scrape.add_argument("--block-resources", action="store_true", default=True,
+                            help="не грузить картинки/шрифты/css (экономит трафик, включено по умолчанию)")
+    p_scrape.add_argument("--no-block-resources", dest="block_resources", action="store_false")
 
     args = parser.parse_args()
 
     if args.command == "collect":
-        collect_links(args.start_url, args.pages, (args.delay_min, args.delay_max), args.headless)
+        collect_links(args.start_url, args.pages, (args.delay_min, args.delay_max), args.headless, args.block_resources)
     elif args.command == "scrape":
-        scrape(args.limit, (args.delay_min, args.delay_max), args.headless)
+        scrape(args.limit, (args.delay_min, args.delay_max), args.headless, args.block_resources)
 
 
 if __name__ == "__main__":
