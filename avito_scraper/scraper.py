@@ -175,9 +175,8 @@ def collect_links(start_url: str, pages: int, delay: tuple[float, float], headle
             for page_num in range(1, pages + 1):
                 url = paginate_url(start_url, page_num)
                 print(f"[collect] страница {page_num}/{pages}: {url}")
-                try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                except PWTimeoutError:
+                response = goto_with_backoff(page, url)
+                if response is None:
                     print("  -> таймаут загрузки, пропускаю страницу")
                     continue
 
@@ -224,6 +223,27 @@ def paginate_url(start_url: str, page_num: int) -> str:
         return start_url
     sep = "&" if "?" in start_url else "?"
     return f"{start_url}{sep}p={page_num}"
+
+
+def goto_with_backoff(page: Page, url: str, max_attempts: int = 4, backoff_seconds: float = 25.0):
+    """page.goto с отдельной обработкой 429 (Too Many Requests) — это не
+    антибот-капча, а rate-limit конкретно на этом IP/прокси, капча его не
+    снимает. При 429 ждём подольше и повторяем; возвращает Response
+    последней попытки (может быть None, если это был таймаут)."""
+    response = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        except PWTimeoutError:
+            return None
+        if response is not None and response.status == 429:
+            print(f"  -> 429 Too Many Requests (попытка {attempt}/{max_attempts}), "
+                  f"жду {backoff_seconds:.0f}с — это rate-limit по IP, не капча")
+            if attempt < max_attempts:
+                time.sleep(backoff_seconds)
+            continue
+        return response
+    return response
 
 
 def is_blocked(page: Page) -> bool:
@@ -355,9 +375,7 @@ def extract_breadcrumbs(page: Page) -> list[str]:
 
 
 def parse_item(page: Page, url: str, item_id: int, delay: tuple[float, float]) -> Optional[Listing]:
-    try:
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    except PWTimeoutError:
+    if goto_with_backoff(page, url) is None:
         print(f"  -> таймаут при загрузке {url}")
         return None
 
