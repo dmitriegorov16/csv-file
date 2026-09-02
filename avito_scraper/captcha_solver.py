@@ -221,5 +221,8 @@ def is_blocked_after_solve(page: Page) -> bool:
         title = (page.title() or "").lower()
     except Exception:
         title = ""
-    markers = ["captcha", "доступ ограничен", "подтвердите, что вы не робот", "проверка браузера"]
+    # только заголовки страниц-заглушек фаервола; голое слово "captcha"
+    # сюда не годится — оно встречается и на нормальных страницах
+    markers = ["доступ ограничен", "проверка безопасности",
+               "подтвердите, что вы не робот", "проверка браузера"]
     return any(m in title for m in markers)

@@ -369,18 +369,34 @@ def goto_with_backoff(page: Page, url: str, max_attempts: int = 4, backoff_secon
     return response
 
 
+# Заголовки, которые Avito ставит на своих страницах-заглушках фаервола:
+# "Доступ ограничен: проблема с IP", "Доступ ограничен: проверка безопасности".
+FIREWALL_TITLE_MARKERS = [
+    "доступ ограничен",
+    "проверка безопасности",
+    "подтвердите, что вы не робот",
+    "проверка браузера",
+]
+
+
 def is_blocked(page: Page) -> bool:
+    """Заблокирована ли страница фаерволом Avito.
+
+    ВАЖНО: нельзя искать слово "captcha" по всему HTML — на нормальной
+    странице объявления оно встречается (например, в recaptcha-compat
+    шиме), и тогда прекрасно загрузившаяся карточка ошибочно считается
+    заблокированной. Поэтому проверяем только заголовок страницы и
+    наличие самой формы фаервола."""
     try:
         title = (page.title() or "").lower()
     except Exception:
         title = ""
-    content = ""
+    if any(m in title for m in FIREWALL_TITLE_MARKERS):
+        return True
     try:
-        content = page.content().lower()
+        return page.query_selector(".js-firewall-form") is not None
     except Exception:
-        pass
-    markers = ["captcha", "доступ ограничен", "подтвердите, что вы не робот", "проверка браузера"]
-    return any(m in title or m in content for m in markers)
+        return False
 
 
 def wait_for_item_links(page: Page, timeout_ms: int = 15000) -> None:
