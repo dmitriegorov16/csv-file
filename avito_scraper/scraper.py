@@ -219,6 +219,103 @@ def collect_links(start_url: str, pages: int, delay: tuple[float, float], headle
     print(f"[collect] готово. Добавлено новых ссылок: {added}. Всего в очереди: {len(seen)}")
 
 
+# --------------------------------------------------------------------------
+# Шаг 1-альтернатива: сбор ссылок из sitemap
+# --------------------------------------------------------------------------
+#
+# Avito публикует карты сайта для поисковиков, и они отдаются обычным HTTP
+# без фаервола/капчи/прокси (проверено: robots.txt и sitemap отдаются даже
+# с того IP, которому фронтенд показывает "Доступ ограничен"). В индексе
+# есть карты вида item_<категория>_<id>_<N>.xml.gz — это ссылки на сами
+# карточки объявлений, до ~50000 в одном файле.
+#
+# Это делает обход страниц поиска браузером ненужным: ссылки берём здесь,
+# бесплатно и почти без трафика, а браузер тратим только на сами карточки.
+
+SITEMAP_INDEX_URL = "https://www.avito.ru/sitemap/index.xml"
+LOC_RE = re.compile(r"<loc>([^<]+)</loc>")
+
+
+def _http_get(url: str, timeout: int = 60) -> bytes:
+    import urllib.request
+    request = urllib.request.Request(url, headers={
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept-Language": "ru-RU,ru;q=0.9",
+    })
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read()
+
+
+def _fetch_locs(url: str) -> list[str]:
+    """Скачивает sitemap (при необходимости распаковывает .gz) и возвращает
+    все <loc> из него."""
+    import gzip
+    raw = _http_get(url)
+    if url.endswith(".gz") or raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    return LOC_RE.findall(raw.decode("utf-8", errors="replace"))
+
+
+def collect_from_sitemap(category: Optional[str], max_urls: int) -> None:
+    """Наполняет очередь ссылок (data/urls.jsonl) из карт сайта Avito.
+
+    category — подстрока имени карты для фильтра (например "avtomobili"
+    или "mebel"); если не задана, берутся все карты с карточками подряд.
+    max_urls — сколько ссылок набрать за этот запуск."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    seen: set[str] = set()
+    if URLS_FILE.exists():
+        for line in URLS_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                seen.add(json.loads(line)["url"])
+    print(f"[sitemap] в очереди уже есть ссылок: {len(seen)}")
+
+    print(f"[sitemap] качаю индекс {SITEMAP_INDEX_URL}")
+    all_maps = _fetch_locs(SITEMAP_INDEX_URL)
+
+    # нас интересуют только карты с карточками объявлений (item_*),
+    # canonical_serp_* и прочие — это категории и фильтры, не объявления
+    item_maps = [m for m in all_maps if "/item_" in m]
+    if category:
+        item_maps = [m for m in item_maps if category in m]
+    print(f"[sitemap] подходящих карт с объявлениями: {len(item_maps)}")
+    if not item_maps:
+        print("[sitemap] ничего не найдено — проверьте значение --category "
+              "(это подстрока имени карты, например avtomobili, mebel, akvarium)")
+        return
+
+    random.shuffle(item_maps)
+
+    added = 0
+    with URLS_FILE.open("a", encoding="utf-8") as out:
+        for sitemap_url in item_maps:
+            if added >= max_urls:
+                break
+            print(f"[sitemap] {sitemap_url.rsplit('/', 1)[-1]}")
+            try:
+                locs = _fetch_locs(sitemap_url)
+            except Exception as exc:
+                print(f"  -> не смог скачать: {type(exc).__name__}: {exc}")
+                continue
+
+            found = 0
+            for loc in locs:
+                if added >= max_urls:
+                    break
+                loc = loc.split("?")[0]
+                if ITEM_LINK_RE.match(loc) and loc not in seen:
+                    seen.add(loc)
+                    out.write(json.dumps({"url": loc}, ensure_ascii=False) + "\n")
+                    added += 1
+                    found += 1
+            out.flush()
+            print(f"  -> новых ссылок: {found} (всего добавлено: {added}/{max_urls})")
+
+    print(f"[sitemap] готово. Добавлено новых ссылок: {added}. Всего в очереди: {len(seen)}")
+
+
 def paginate_url(start_url: str, page_num: int) -> str:
     if page_num <= 1:
         return start_url
@@ -576,6 +673,15 @@ def main() -> None:
                             help="не грузить картинки/шрифты/css (экономит трафик, включено по умолчанию)")
     p_collect.add_argument("--no-block-resources", dest="block_resources", action="store_false")
 
+    p_sitemap = sub.add_parser(
+        "sitemap",
+        help="набрать ссылки на объявления из карт сайта Avito (без браузера, прокси и капчи)")
+    p_sitemap.add_argument("--category", default=None,
+                           help="фильтр по имени карты, например avtomobili / mebel / akvarium "
+                                "(по умолчанию — все категории подряд)")
+    p_sitemap.add_argument("--max-urls", type=int, default=30000,
+                           help="сколько ссылок набрать за этот запуск")
+
     p_scrape = sub.add_parser("scrape", help="обойти очередь ссылок и заполнить CSV")
     p_scrape.add_argument("--limit", type=int, default=None, help="сколько объявлений обработать за этот запуск")
     p_scrape.add_argument("--delay-min", type=float, default=2.0)
@@ -590,6 +696,8 @@ def main() -> None:
 
     if args.command == "collect":
         collect_links(args.start_url, args.pages, (args.delay_min, args.delay_max), args.headless, args.block_resources)
+    elif args.command == "sitemap":
+        collect_from_sitemap(args.category, args.max_urls)
     elif args.command == "scrape":
         scrape(args.limit, (args.delay_min, args.delay_max), args.headless, args.block_resources)
 

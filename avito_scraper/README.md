@@ -77,7 +77,31 @@ playwright install --with-deps chromium
 
 Скрипт работает в два шага.
 
-### 1. Собрать ссылки на объявления
+### 1. Собрать ссылки на объявления — из sitemap (рекомендуется)
+
+```bash
+python scraper.py sitemap --category avtomobili --max-urls 30000
+```
+
+Avito публикует карты сайта для поисковиков, и они отдаются обычным HTTP —
+**без фаервола, капчи и прокси** (проверено: sitemap отдаётся даже с того
+IP, которому фронтенд показывает «Доступ ограничен»). В картах вида
+`item_<категория>_<id>_<N>.xml.gz` лежат прямые ссылки на карточки
+объявлений, до ~50000 в одном файле, а самих карт тысячи.
+
+- `--category` — подстрока имени карты: `avtomobili`, `mebel_i_interer`,
+  `odezhda_obuv_aksessuary`, `vakansii`, `akvarium` и т.д. Без неё берутся
+  все категории подряд.
+- `--max-urls` — сколько ссылок набрать за запуск. Дубликаты не добавляются,
+  можно запускать повторно и докидывать в ту же очередь.
+
+Посмотреть доступные категории:
+
+```bash
+curl -s https://www.avito.ru/sitemap/index.xml | grep -o 'item_[a-z_]*' | sort -u
+```
+
+### 1-альтернатива. Собрать ссылки обходом страниц поиска
 
 ```bash
 python scraper.py collect --start-url "https://www.avito.ru/moskva/transport" --pages 5
