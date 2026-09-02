@@ -426,6 +426,13 @@ def try_unblock(page: Page, delay: tuple[float, float]) -> bool:
     и увидеть уже протухшую cookie."""
     if not is_blocked(page):
         return True
+    # видно, что именно сработало — иначе непонятно, настоящий это фаервол
+    # или ложное срабатывание детектора на нормальной странице
+    try:
+        print(f"  [blocked] title={page.title()!r} "
+              f"firewall_form={page.query_selector('.js-firewall-form') is not None}")
+    except Exception:
+        pass
     if captcha_solver.solve_if_present(page):
         # после успешной проверки Avito может ещё редиректить/дохлопывать
         # SPA-навигацию — дадим странице осесть, иначе следующий же
