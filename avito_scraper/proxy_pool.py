@@ -137,27 +137,33 @@ def harvest(limit: int = 3000, use_cache: bool = True) -> list[str]:
 
     found: list[str] = []
     seen: set[str] = set()
-    for scheme, url in SOURCES:
-        name = url.split("?")[0].rsplit("/", 1)[-1]
-        name = f"{scheme}/{name}"
-        print(f"  ... {name}", end="", flush=True)
-        try:
-            text = _download(url)
-        except Exception as exc:
-            print(f"\r  [-] {name}: {type(exc).__name__}      ")
-            continue
 
-        count = 0
-        for line in text.splitlines():
-            match = HOST_PORT_RE.match(line.strip())
-            if not match:
+    def load_one(entry):
+        scheme, url = entry
+        name = f"{scheme}/{url.split('?')[0].rsplit('/', 1)[-1]}"
+        try:
+            return name, scheme, _download(url), None
+        except Exception as exc:
+            return name, scheme, "", exc
+
+    # источники качаются параллельно: их девять, а сеть до некоторых
+    # бывает медленной — последовательно это выливалось в минуты ожидания
+    with ThreadPoolExecutor(max_workers=len(SOURCES)) as pool:
+        for name, scheme, text, error in pool.map(load_one, SOURCES):
+            if error is not None:
+                print(f"  [-] {name}: {type(error).__name__}")
                 continue
-            server = f"{match.group(1) or scheme}://{match.group(2)}:{match.group(3)}"
-            if server not in seen:
-                seen.add(server)
-                found.append(server)
-                count += 1
-        print(f"\r  [+] {name}: {count}      ")
+            count = 0
+            for line in text.splitlines():
+                match = HOST_PORT_RE.match(line.strip())
+                if not match:
+                    continue
+                server = f"{match.group(1) or scheme}://{match.group(2)}:{match.group(3)}"
+                if server not in seen:
+                    seen.add(server)
+                    found.append(server)
+                    count += 1
+            print(f"  [+] {name}: {count}")
 
     if found:
         _write_cache(found)

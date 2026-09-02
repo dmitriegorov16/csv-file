@@ -271,6 +271,12 @@ try:
 except ImportError:            # без requests остаются только HTTP-прокси
     HAVE_REQUESTS = False
 
+try:
+    import socks  # noqa: F401  (PySocks — нужен requests для socks5://)
+    HAVE_SOCKS = True
+except ImportError:
+    HAVE_SOCKS = False
+
 
 def _proxy_dict(server: str) -> dict:
     # socks5h означает "резолвить DNS на стороне прокси" — так надёжнее
@@ -343,8 +349,23 @@ def main() -> None:
     servers = proxy_pool.harvest()
     if not servers:
         sys.exit("Не удалось скачать списки прокси.")
+
+    if not HAVE_SOCKS:
+        socks_count = sum(1 for s in servers if s.startswith("socks"))
+        servers = [s for s in servers if not s.startswith("socks")]
+        print(f"      ВНИМАНИЕ: PySocks не установлен, поэтому {socks_count} "
+              f"SOCKS-адресов пропущены.\n"
+              f"      А это как раз самые полезные для нас: обычные HTTP-прокси\n"
+              f"      часто не умеют HTTPS, без которого Avito не открыть.\n"
+              f"      Поставьте:  pip install PySocks\n")
+
     ring = ProxyRing(servers)
-    print(f"      адресов в пуле: {ring.alive}\n")
+    kinds = {}
+    for server in servers:
+        kind = server.split("://")[0]
+        kinds[kind] = kinds.get(kind, 0) + 1
+    breakdown = ", ".join(f"{kind} {count}" for kind, count in sorted(kinds.items()))
+    print(f"      адресов в пуле: {ring.alive} ({breakdown})\n")
 
     print(f"[2/2] собираю {len(todo)} карточек в {args.workers} потоков "
           f"(готово ранее: {len(done)})\n")
