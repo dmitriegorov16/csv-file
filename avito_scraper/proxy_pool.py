@@ -27,6 +27,7 @@ import argparse
 import random
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -60,18 +61,42 @@ HEADERS = {
 HOST_PORT_RE = re.compile(r"^(?:(\w+)://)?(\d{1,3}(?:\.\d{1,3}){3}):(\d{2,5})$")
 
 
+def _download(url: str, deadline: float = 20.0, max_bytes: int = 8_000_000) -> str:
+    """Качает текстовый список с ЖЁСТКИМ ограничением по времени и размеру.
+
+    Одного timeout у сокета мало: он отсчитывается заново на каждом
+    полученном байте, поэтому сервер, отдающий данные по капле, держит
+    соединение сколько угодно — на этом сбор и завис на 10 минут. Читаем
+    кусками и сами следим за общим временем."""
+    request = urllib.request.Request(url, headers={"User-Agent": HEADERS["User-Agent"]})
+    started = time.monotonic()
+    chunks = []
+    total = 0
+    with urllib.request.urlopen(request, timeout=8) as response:
+        while True:
+            if time.monotonic() - started > deadline:
+                raise TimeoutError(f"источник отдаёт медленнее {deadline:.0f}с")
+            chunk = response.read(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                break
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
 def harvest(limit: int = 3000) -> list[str]:
     """Скачивает публичные списки и возвращает адреса вида http://ip:port."""
     found: list[str] = []
     seen: set[str] = set()
     for scheme, url in SOURCES:
+        name = url.rsplit("/", 1)[-1]
+        print(f"  ... {name}", end="", flush=True)
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": HEADERS["User-Agent"]})
-            with urllib.request.urlopen(request, timeout=30) as response:
-                text = response.read().decode("utf-8", "replace")
+            text = _download(url)
         except Exception as exc:
-            print(f"  [-] {url.rsplit('/', 2)[-2]}/{url.rsplit('/', 1)[-1]}: "
-                  f"{type(exc).__name__}")
+            print(f"\r  [-] {name}: {type(exc).__name__}      ")
             continue
 
         count = 0
@@ -84,7 +109,7 @@ def harvest(limit: int = 3000) -> list[str]:
                 seen.add(server)
                 found.append(server)
                 count += 1
-        print(f"  [+] {url.rsplit('/', 1)[-1]}: {count}")
+        print(f"\r  [+] {name}: {count}      ")
 
     random.shuffle(found)
     return found[:limit]
