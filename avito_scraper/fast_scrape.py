@@ -225,27 +225,71 @@ def save_counter(next_id: int) -> None:
 # --------------------------------------------------------------------------
 
 class ProxyRing:
-    def __init__(self, servers: list, strikes: int = 2):
-        self.servers = list(servers)
-        random.shuffle(self.servers)
+    """Кольцо прокси с приоритетом.
+
+    priority — свои, приватные адреса. Их мало, но они на порядок ценнее
+    публичных, поэтому пока жив хоть один, работаем только ими: если
+    просто перемешать их с тремя тысячами публичных, на них придётся
+    десятая доля процента запросов и мы так и не узнаем, годятся ли они."""
+
+    def __init__(self, servers: list, strikes: int = 2, priority: Optional[list] = None,
+                 cooldown: float = 0.0):
+        self.priority = list(priority or [])
+        rest = [s for s in servers if s not in set(self.priority)]
+        random.shuffle(rest)
+        self.servers = rest
         self.strikes = strikes
+        self.cooldown = cooldown
         self.failures: dict = {}
+        self.last_used: dict = {}
         self.lock = threading.Lock()
         self.position = 0
+        self.priority_position = 0
 
-    def take(self) -> Optional[str]:
-        with self.lock:
-            if not self.servers:
+    def _pick(self) -> Optional[str]:
+        pool = self.priority if self.priority else self.servers
+        if not pool:
+            return None
+        # ищем адрес, который достаточно "остыл": частые запросы с одного
+        # IP — это ровно то, за что Avito банит, а приватных адресов мало
+        # и терять их нельзя
+        now = time.monotonic()
+        for _ in range(len(pool)):
+            if self.priority:
+                self.priority_position = (self.priority_position + 1) % len(pool)
+                server = pool[self.priority_position]
+            else:
+                self.position = (self.position + 1) % len(pool)
+                server = pool[self.position]
+            if now - self.last_used.get(server, 0.0) >= self.cooldown:
+                self.last_used[server] = now
+                return server
+        return None
+
+    def take(self, wait: float = 30.0) -> Optional[str]:
+        """Отдаёт остывший прокси, при необходимости подождав."""
+        deadline = time.monotonic() + wait
+        while True:
+            with self.lock:
+                if not self.priority and not self.servers:
+                    return None
+                server = self._pick()
+                if server is not None:
+                    return server
+            if time.monotonic() > deadline:
                 return None
-            self.position = (self.position + 1) % len(self.servers)
-            return self.servers[self.position]
+            time.sleep(0.25)
 
     def punish(self, server: str) -> None:
         with self.lock:
             self.failures[server] = self.failures.get(server, 0) + 1
-            if self.failures[server] >= self.strikes and server in self.servers:
-                self.servers.remove(server)
-                self.failures.pop(server, None)
+            if self.failures[server] < self.strikes:
+                return
+            for pool in (self.priority, self.servers):
+                if server in pool:
+                    pool.remove(server)
+                    self.failures.pop(server, None)
+                    break
 
     def reward(self, server: str) -> None:
         with self.lock:
@@ -262,7 +306,12 @@ class ProxyRing:
     @property
     def alive(self) -> int:
         with self.lock:
-            return len(self.servers)
+            return len(self.priority) + len(self.servers)
+
+    @property
+    def using_private(self) -> bool:
+        with self.lock:
+            return bool(self.priority)
 
 
 try:
@@ -330,6 +379,11 @@ def main() -> None:
     parser.add_argument("--timeout", type=int, default=15)
     parser.add_argument("--attempts", type=int, default=6,
                         help="сколько прокси перепробовать на одну карточку")
+    parser.add_argument("--only-mine", action="store_true",
+                        help="только свои прокси из data/my_proxies.txt, без публичных")
+    parser.add_argument("--cooldown", type=float, default=0.0,
+                        help="минимальная пауза между запросами с ОДНОГО адреса, сек; "
+                             "бережёт приватные прокси от бана")
     args = parser.parse_args()
 
     if not URLS_FILE.exists():
@@ -345,10 +399,20 @@ def main() -> None:
         print("Всё из очереди уже обработано.")
         return
 
-    print("[1/2] качаю списки прокси")
-    servers = proxy_pool.harvest()
+    mine = proxy_pool.load_my_proxies()
+    if mine:
+        print(f"[1/2] свои прокси из {proxy_pool.MY_PROXIES_FILE.name}: {len(mine)}")
+        if args.only_mine:
+            servers = mine
+            print("      публичные списки не трогаю (--only-mine)")
+        else:
+            print("      добираю публичные списки следом")
+            servers = mine + proxy_pool.harvest()
+    else:
+        print("[1/2] качаю списки прокси")
+        servers = proxy_pool.harvest()
     if not servers:
-        sys.exit("Не удалось скачать списки прокси.")
+        sys.exit("Не удалось получить ни одного прокси.")
 
     if not HAVE_SOCKS:
         socks_count = sum(1 for s in servers if s.startswith("socks"))
@@ -359,7 +423,8 @@ def main() -> None:
               f"      часто не умеют HTTPS, без которого Avito не открыть.\n"
               f"      Поставьте:  pip install PySocks\n")
 
-    ring = ProxyRing(servers)
+    ring = ProxyRing(servers, priority=mine if mine else None,
+                     cooldown=args.cooldown)
     kinds = {}
     for server in servers:
         kind = server.split("://")[0]

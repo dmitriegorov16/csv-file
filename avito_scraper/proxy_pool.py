@@ -223,6 +223,38 @@ def find_working(servers: list[str], needed: int, workers: int = 60,
     return working
 
 
+MY_PROXIES_FILE = DATA_DIR / "my_proxies.txt"
+
+
+def load_my_proxies() -> list:
+    """Свои прокси из data/my_proxies.txt.
+
+    Понимает формат выгрузки Webshare и подобных — ip:port:логин:пароль,
+    а также обычный scheme://логин:пароль@host:port. Файл лежит в data/,
+    которая не попадает в git, поэтому пароли не утекут в репозиторий.
+
+    Приватные адреса всегда идут первыми: их выдали лично вам, их не
+    затёрли тысячи чужих ботов, и у них принципиально другие шансы."""
+    if not MY_PROXIES_FILE.exists():
+        return []
+
+    servers = []
+    for line in MY_PROXIES_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "://" in line:
+            servers.append(line)
+            continue
+        parts = line.split(":")
+        if len(parts) == 4:
+            host, port, user, password = parts
+            servers.append(f"http://{user}:{password}@{host}:{port}")
+        elif len(parts) == 2:
+            servers.append(f"http://{parts[0]}:{parts[1]}")
+    return servers
+
+
 def load_working() -> list[str]:
     if not WORKING_FILE.exists():
         return []
