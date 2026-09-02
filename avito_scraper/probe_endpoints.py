@@ -54,27 +54,33 @@ BROWSER_HEADERS = {
 
 
 def candidate_endpoints(item_id: str) -> list[str]:
-    """Кандидаты на JSON-эндпоинт карточки. Пространство /web/N/ —
-    подсмотрено в реальном трафике страницы, остальное — вариации."""
-    return [
-        # известно, что существует (видели в трафике) — проверка самого
-        # факта, открыт ли /web/ для прямых запросов
-        f"https://www.avito.ru/web/1/delivery/conditions/{item_id}/buyer",
-        f"https://www.avito.ru/web/1/network/check",
-        # вероятные формы эндпоинта карточки
-        f"https://www.avito.ru/web/1/item/{item_id}",
-        f"https://www.avito.ru/web/2/item/{item_id}",
-        f"https://www.avito.ru/web/3/item/{item_id}",
+    """Кандидаты на JSON-эндпоинт карточки.
+
+    Разведка дала важный сигнал: 404 означает "такого маршрута нет", а
+    429 — "маршрут есть, но нас режет лимитер". По этому признаку уже
+    видно, что живут именно формы с /items/ (множественное число):
+
+        404  /web/1/item/<id>          — нет такого
+        429  /web/1/items/<id>         — ЕСТЬ
+        429  /web/1/items/<id>/card    — ЕСТЬ
+
+    Поэтому здесь прощупывается прежде всего пространство /web/N/items/."""
+    urls = [
+        # подтверждённо существующие (429, а не 404) — контрольные точки
         f"https://www.avito.ru/web/1/items/{item_id}",
-        f"https://www.avito.ru/web/1/item/{item_id}/card",
-        f"https://www.avito.ru/web/1/item/{item_id}/item-card",
         f"https://www.avito.ru/web/1/items/{item_id}/card",
-        # старые/мобильные формы
-        f"https://www.avito.ru/api/1/items/{item_id}",
-        f"https://www.avito.ru/api/11/items/{item_id}",
-        f"https://www.avito.ru/js/1/item/{item_id}",
-        f"https://m.avito.ru/api/13/items/{item_id}",
+        f"https://www.avito.ru/web/1/delivery/conditions/{item_id}/buyer",
     ]
+    # разные версии API на том же маршруте
+    for version in (2, 3, 4, 5, 6, 7):
+        urls.append(f"https://www.avito.ru/web/{version}/items/{item_id}")
+    # вероятные под-ресурсы карточки
+    for suffix in ("item", "view", "details", "info", "seller", "similar"):
+        urls.append(f"https://www.avito.ru/web/1/items/{item_id}/{suffix}")
+    # формы с параметрами — некоторые эндпоинты без них отвечают иначе
+    urls.append(f"https://www.avito.ru/web/1/items/{item_id}?forceLocation=true")
+    urls.append(f"https://www.avito.ru/web/1/items?ids={item_id}")
+    return urls
 
 
 def proxy_opener():
@@ -119,12 +125,20 @@ def main() -> None:
     item_id = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_ITEM_ID
     opener = proxy_opener()
 
-    print(f"\n=== 1. Внутреннее API (обычный HTTP-клиент), item_id={item_id}\n")
+    print(f"\n=== 1. Внутреннее API (обычный HTTP-клиент), item_id={item_id}")
+    print("    404 = маршрута нет | 429 = маршрут ЕСТЬ, но режет лимитер | 2xx = данные\n")
+    existing = []
     for url in candidate_endpoints(item_id):
         status, body = probe_urllib(url, opener)
-        print(f"  {status:>12}  {url.replace('https://', '')}")
+        mark = " <- ЕСТЬ" if status == "429" else ""
+        print(f"  {status:>12}  {url.replace('https://', '')}{mark}")
+        if status == "429":
+            existing.append(url)
         if status.isdigit() and status.startswith("2"):
+            existing.append(url)
             print(f"                 -> {summarize(body)}")
+    if existing:
+        print(f"\n  Существующих маршрутов найдено: {len(existing)}")
 
     print(f"\n=== 2. Страница объявления обычным HTTP-клиентом\n")
     status, body = probe_urllib(DEFAULT_ITEM_URL, opener)
@@ -166,6 +180,26 @@ def main() -> None:
             with open("item_direct.html", "w", encoding="utf-8") as handle:
                 handle.write(text)
             print("                 HTML сохранён: item_direct.html")
+            break
+
+    print(f"\n=== 4. Найденный API-эндпоинт с Chrome-отпечатком\n")
+    api_url = f"https://www.avito.ru/web/1/items/{item_id}"
+    for impersonate in ("chrome124", "chrome120"):
+        try:
+            response = cffi_requests.get(
+                api_url, impersonate=impersonate, proxies=proxies, timeout=30,
+                headers={"Accept": "application/json, text/plain, */*",
+                         "X-Requested-With": "XMLHttpRequest"})
+        except Exception as exc:
+            print(f"  {impersonate:>12}  ошибка: {type(exc).__name__}: {str(exc)[:120]}")
+            continue
+        text = response.text
+        print(f"  {impersonate:>12}  status={response.status_code}  ({len(text)} байт)")
+        if response.status_code == 200:
+            print(f"                 {summarize(text)}")
+            with open("item_api.json", "w", encoding="utf-8") as handle:
+                handle.write(text)
+            print("                 Ответ сохранён: item_api.json")
             break
 
 
