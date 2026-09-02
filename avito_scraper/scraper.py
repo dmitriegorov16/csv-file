@@ -188,6 +188,7 @@ def collect_links(start_url: str, pages: int, delay: tuple[float, float], headle
                     break
 
                 human_delay(*delay)
+                wait_for_item_links(page)
 
                 try:
                     hrefs = page.eval_on_selector_all(
@@ -237,6 +238,22 @@ def is_blocked(page: Page) -> bool:
         pass
     markers = ["captcha", "доступ ограничен", "подтвердите, что вы не робот", "проверка браузера"]
     return any(m in title or m in content for m in markers)
+
+
+def wait_for_item_links(page: Page, timeout_ms: int = 15000) -> None:
+    """Avito — SPA: сразу после domcontentloaded карточек объявлений на
+    странице ещё нет, React дорисовывает их отдельным запросом. Ждём, пока
+    появится хотя бы одна ссылка на объявление, прежде чем читать hrefs.
+    Если за timeout_ms ничего не появилось — просто идём дальше с тем, что
+    есть (страница могла быть пустой категорией и т.п.)."""
+    try:
+        page.wait_for_function(
+            """() => Array.from(document.querySelectorAll('a[href]'))
+                .some(a => /^https:\\/\\/www\\.avito\\.ru\\/.+_\\d+$/.test(a.href.split('?')[0]))""",
+            timeout=timeout_ms,
+        )
+    except PWTimeoutError:
+        pass
 
 
 def try_unblock(page: Page, delay: tuple[float, float]) -> bool:
@@ -352,6 +369,16 @@ def parse_item(page: Page, url: str, item_id: int, delay: tuple[float, float]) -
     if page.query_selector('[data-marker="item-view/closed-warning"]'):
         print(f"  -> объявление снято/недоступно: {url}")
         return None
+
+    # карточка объявления тоже может дорисовываться JS уже после
+    # domcontentloaded — ждём появления заголовка перед парсингом полей
+    try:
+        page.wait_for_selector(
+            '[data-marker="item-view/title-info"], meta[property="og:title"]',
+            timeout=10000,
+        )
+    except PWTimeoutError:
+        pass
 
     json_ld = extract_json_ld(page)
 
