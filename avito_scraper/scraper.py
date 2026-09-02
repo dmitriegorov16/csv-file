@@ -252,6 +252,16 @@ def goto_with_backoff(page: Page, url: str, max_attempts: int = 4, backoff_secon
             response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
         except PWTimeoutError:
             return None
+        except Exception as exc:
+            # обрыв соединения и т.п. (особенно частое дело у нестабильных
+            # бесплатных/публичных прокси) — не таймаут и не HTTP-ответ,
+            # но тоже стоит попробовать ещё раз, а не падать всем скриптом
+            print(f"  -> ошибка соединения (попытка {attempt}/{max_attempts}): "
+                  f"{type(exc).__name__}: {str(exc)[:150]}")
+            if attempt < max_attempts:
+                time.sleep(min(backoff_seconds, 10))
+                continue
+            return None
         if response is not None and response.status == 429:
             print(f"  -> 429 Too Many Requests (попытка {attempt}/{max_attempts}), "
                   f"жду {backoff_seconds:.0f}с — это rate-limit по IP, не капча")
