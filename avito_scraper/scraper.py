@@ -169,6 +169,7 @@ def collect_links(start_url: str, pages: int, delay: tuple[float, float], headle
         browser = launch_browser(pw, headless)
         context = new_context(browser, block_resources=block_resources)
         page = context.new_page()
+        attach_diagnostics(page)
 
         added = 0
         with URLS_FILE.open("a", encoding="utf-8") as out:
@@ -223,6 +224,21 @@ def paginate_url(start_url: str, page_num: int) -> str:
         return start_url
     sep = "&" if "?" in start_url else "?"
     return f"{start_url}{sep}p={page_num}"
+
+
+def attach_diagnostics(page: Page) -> None:
+    """Логирует фоновые запросы с ошибочным статусом (429/403/5xx) —
+    именно такие XHR внутри SPA грузят реальные данные объявлений, и их
+    429 не виден в статусе основного page.goto()."""
+    def on_response(response):
+        try:
+            status = response.status
+        except Exception:
+            return
+        if status == 429 or status >= 500 or status == 403:
+            print(f"  [net] {status} {response.url[:100]}")
+
+    page.on("response", on_response)
 
 
 def goto_with_backoff(page: Page, url: str, max_attempts: int = 4, backoff_seconds: float = 25.0):
@@ -493,6 +509,7 @@ def scrape(limit: Optional[int], delay: tuple[float, float], headless: bool, blo
         browser = launch_browser(pw, headless)
         context = new_context(browser, block_resources=block_resources)
         page = context.new_page()
+        attach_diagnostics(page)
 
         with OUTPUT_CSV.open("a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
