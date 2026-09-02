@@ -21,11 +21,13 @@ Avito показывает что-то другое (свой JS-челленд�
 from __future__ import annotations
 
 import os
+import time
 
 from playwright.sync_api import Page
 
 API_KEY = os.environ.get("RUCAPTCHA_API_KEY", "").strip()
 SERVER = os.environ.get("RUCAPTCHA_SERVER", "rucaptcha.com").strip()
+MAX_ATTEMPTS = int(os.environ.get("RUCAPTCHA_MAX_ATTEMPTS", "3"))
 
 _solver = None
 
@@ -107,19 +109,41 @@ def solve_if_present(page: Page) -> bool:
         or page.query_selector("script[src*='hcaptcha']") is not None
     )
 
+    # hCaptcha Enterprise (частый выбор у крупных сайтов вроде Avito) требует
+    # ещё и rqdata, без него сервис решения физически не может выдать
+    # валидный токен — отсюда возможен ERROR_CAPTCHA_UNSOLVABLE даже когда
+    # sitekey найден верно.
+    extra: dict = {}
+    rqdata_el = page.query_selector("[data-rqdata]")
+    if rqdata_el:
+        rqdata = rqdata_el.get_attribute("data-rqdata")
+        if rqdata:
+            extra["rqdata"] = rqdata
+
     solver = _get_solver()
     kind = "hCaptcha" if is_hcaptcha else "reCAPTCHA"
-    print(f"  -> нашёл {kind} (sitekey={sitekey[:12]}...), отправляю на rucaptcha, ждём решения...")
-    try:
-        if is_hcaptcha:
-            result = solver.hcaptcha(sitekey=sitekey, url=page.url)
-            _inject_hcaptcha_token(page, result["code"])
-        else:
-            result = solver.recaptcha(sitekey=sitekey, url=page.url)
-            _inject_recaptcha_token(page, result["code"])
-    except Exception as exc:
-        print(f"  -> не удалось решить капчу через rucaptcha: {exc}")
-        return False
 
-    print("  -> капча решена, перезагружаю страницу")
-    return True
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        print(f"  -> нашёл {kind} (sitekey={sitekey[:12]}...), попытка {attempt}/{MAX_ATTEMPTS} "
+              f"через rucaptcha, ждём решения...")
+        try:
+            if is_hcaptcha:
+                result = solver.hcaptcha(sitekey=sitekey, url=page.url, **extra)
+                _inject_hcaptcha_token(page, result["code"])
+            else:
+                result = solver.recaptcha(sitekey=sitekey, url=page.url, **extra)
+                _inject_recaptcha_token(page, result["code"])
+        except Exception as exc:
+            print(f"  -> попытка {attempt} не удалась: {exc}")
+            if attempt < MAX_ATTEMPTS:
+                time.sleep(5)
+            continue
+
+        print("  -> капча решена, перезагружаю страницу")
+        return True
+
+    print(f"  -> не удалось решить капчу через rucaptcha за {MAX_ATTEMPTS} попыт(ки/ок). "
+          "Если это повторяется стабильно — вероятно, дело не в самой капче, а в том, что "
+          "IP этого сервера уже помечен антиботом Avito как подозрительный "
+          "(похоже на это, раз капча вылезла на самом первом запросе).")
+    return False
