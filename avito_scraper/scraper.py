@@ -67,6 +67,17 @@ def human_delay(min_s: float, max_s: float) -> None:
     time.sleep(random.uniform(min_s, max_s))
 
 
+def launch_browser(pw, headless: bool):
+    # Позволяет указать путь к уже установленному Chromium через переменную
+    # окружения (например, в песочницах с предустановленным браузером),
+    # не трогая обычный playwright-managed браузер в Codespaces.
+    import os
+    executable_path = os.environ.get("PLAYWRIGHT_CHROMIUM_PATH")
+    if executable_path:
+        return pw.chromium.launch(headless=headless, executable_path=executable_path)
+    return pw.chromium.launch(headless=headless)
+
+
 def new_context(pw_browser, headless_ua: Optional[str] = None):
     ua = headless_ua or random.choice(USER_AGENTS)
     context = pw_browser.new_context(
@@ -116,7 +127,7 @@ def collect_links(start_url: str, pages: int, delay: tuple[float, float], headle
                 seen.add(json.loads(line)["url"])
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=headless)
+        browser = launch_browser(pw, headless)
         context = new_context(browser)
         page = context.new_page()
 
@@ -361,7 +372,7 @@ def scrape(limit: Optional[int], delay: tuple[float, float], headless: bool) -> 
 
     write_header = not OUTPUT_CSV.exists()
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=headless)
+        browser = launch_browser(pw, headless)
         context = new_context(browser)
         page = context.new_page()
 
