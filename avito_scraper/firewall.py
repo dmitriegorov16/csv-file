@@ -36,6 +36,11 @@ INTERNAL = "INTERNAL_CAPTCHA"
 
 # Ключи виджетов зашиты в страницу; вытаскиваем их оттуда, а не из
 # констант — при смене ключа код не должен ломаться молча.
+# Ключи, которые Avito отдавал на странице 429. Запасной вариант: ответ
+# /get их может и не содержать, а решать чем-то надо.
+DEFAULT_GEETEST_ID = "2d9c743cf7d63dbc9db578a608196bcd"
+DEFAULT_HCAPTCHA_KEY = "070db171-ddb9-4c93-b7f6-d25d3c9d7e28"
+
 SITEKEY_RE = re.compile(r'data-sitekey=["\']([0-9a-f-]{20,})["\']', re.IGNORECASE)
 GEETEST_ID_RE = re.compile(r'captchaId\s*[:=]\s*["\']([0-9a-f]{20,})["\']', re.IGNORECASE)
 
@@ -68,16 +73,31 @@ def solver():
         return _solver
 
 
+# Как виджет называется в JS и как — в ответе сервера. Это разные вещи:
+# в коде константы GEETEST_CAPTCHA, а /get отвечает {"captcha":
+# {"geeTest": {"type": "geeTest"}}} — имя лежит ключом, а не значением.
+WIDGET_NAMES = {
+    "geetest": GEETEST, "geetest_captcha": GEETEST, "geetestcaptcha": GEETEST,
+    "hcaptcha": HCAPTCHA, "h_captcha": HCAPTCHA,
+    "internal": INTERNAL, "internal_captcha": INTERNAL,
+    "internalcaptcha": INTERNAL,
+}
+
+
 def find_type(data) -> str:
     """Тип виджета из ответа /get.
 
-    Точную форму ответа мы не знаем — на странице она проходит через
-    normalizeCaptcha(). Поэтому ищем известное значение где угодно внутри,
-    вместо того чтобы угадывать имя поля и падать на первом же ответе."""
+    Ответ приходит в виде {"success": {"result": {"captcha": {"geeTest":
+    ...}}}}, то есть имя виджета — ключ. Но полагаться на точный путь
+    нельзя: он у них уже отличается от того, что написано в JS. Поэтому
+    обходим дерево и принимаем название и ключом, и значением."""
     if isinstance(data, str):
-        return data if data in (GEETEST, HCAPTCHA, INTERNAL) else ""
+        return WIDGET_NAMES.get(data.lower().replace("-", "_"), "")
     if isinstance(data, dict):
-        for value in data.values():
+        for key, value in data.items():
+            known = WIDGET_NAMES.get(key.lower().replace("-", "_"), "")
+            if known:
+                return known
             found = find_type(value)
             if found:
                 return found
@@ -87,6 +107,23 @@ def find_type(data) -> str:
             if found:
                 return found
     return ""
+
+
+def _find(data, key: str):
+    """Значение по ключу на любой глубине."""
+    if isinstance(data, dict):
+        if key in data:
+            return data[key]
+        for value in data.values():
+            found = _find(value, key)
+            if found is not None:
+                return found
+    elif isinstance(data, list):
+        for value in data:
+            found = _find(value, key)
+            if found is not None:
+                return found
+    return None
 
 
 def solve(session, page_url: str, page_html: str, timeout: int = 30) -> tuple:
@@ -116,16 +153,21 @@ def solve(session, page_url: str, page_html: str, timeout: int = 30) -> tuple:
     payload = {"captcha": "", "hCaptchaResponse": "", "geetestResponse": {}}
     try:
         if kind == GEETEST:
-            match = GEETEST_ID_RE.search(page_html)
-            if not match:
-                return False, "на странице нет captchaId для geetest"
-            result = solver().geetest_v4(captcha_id=match.group(1), url=page_url)
+            # id виджета может прийти прямо в ответе /get; если нет —
+            # берём из страницы, а если и там нет, то известный нам.
+            captcha_id = (_find(descriptor, "captchaId")
+                          or _find(descriptor, "captcha_id"))
+            if not captcha_id:
+                match = GEETEST_ID_RE.search(page_html)
+                captcha_id = match.group(1) if match else DEFAULT_GEETEST_ID
+            result = solver().geetest_v4(captcha_id=captcha_id, url=page_url)
             payload["geetestResponse"] = json.loads(result["code"])
         elif kind == HCAPTCHA:
-            match = SITEKEY_RE.search(page_html)
-            if not match:
-                return False, "на странице нет sitekey для hcaptcha"
-            result = solver().hcaptcha(sitekey=match.group(1), url=page_url)
+            sitekey = _find(descriptor, "sitekey") or _find(descriptor, "siteKey")
+            if not sitekey:
+                match = SITEKEY_RE.search(page_html)
+                sitekey = match.group(1) if match else DEFAULT_HCAPTCHA_KEY
+            result = solver().hcaptcha(sitekey=sitekey, url=page_url)
             payload["hCaptchaResponse"] = result["code"]
         else:
             # Своя картинка Avito: её ещё надо достать из ответа /get,
