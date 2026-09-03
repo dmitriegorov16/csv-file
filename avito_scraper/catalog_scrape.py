@@ -35,6 +35,7 @@ from pathlib import Path
 
 import requests
 
+import notify
 from scraper import CSV_FIELDS, DATA_DIR, Listing
 from unlock import ensure_access
 
@@ -131,6 +132,23 @@ def categories(session, verbose: bool = True) -> list:
     return unique or [(9, "Автомобили")]
 
 
+def send_chunk(rows: list, total: int) -> str:
+    """Отправить порцию строк отдельным CSV-файлом.
+
+    Именно файлом, а не текстом: строку объявления с описанием в чат не
+    впихнуть, а CSV открывается на телефоне и сразу видно, что собралось."""
+    chunks_dir = DATA_DIR / "chunks"
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+    path = chunks_dir / f"{rows[0].id:06d}-{rows[-1].id:06d}.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row.__dict__)
+    return notify.send_file(
+        path, f"Строки {rows[0].id}–{rows[-1].id}, всего собрано {total}")
+
+
 def load_done() -> set:
     if not PROGRESS.exists():
         return set()
@@ -149,6 +167,12 @@ def main() -> None:
     parser.add_argument("--pause", type=float, default=0.5)
     parser.add_argument("--categories", default="",
                         help="через запятую, если справочник не нужен")
+    parser.add_argument("--max-categories", type=int, default=40,
+                        help="сколько разделов брать из справочника")
+    parser.add_argument("--chunk", type=int, default=50,
+                        help="каждые столько строк отправлять порцию в Telegram")
+    parser.add_argument("--telegram", action="store_true",
+                        help="слать порции и итоговый файл в Telegram")
     args = parser.parse_args()
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -159,6 +183,17 @@ def main() -> None:
                     for c in args.categories.split(",") if c.strip()]
     else:
         sections = categories(session)
+        if len(sections) > args.max_categories:
+            print(f"беру первые {args.max_categories} из {len(sections)}")
+            sections = sections[:args.max_categories]
+
+    if args.telegram:
+        if not notify.enabled():
+            print("TELEGRAM_TOKEN не задан — отправлять нечем\n")
+        else:
+            hello = (f"Начинаю сбор: цель {args.limit}, разделов "
+                     f"{len(sections)}, городов {len(LOCATIONS)}")
+            print(f"telegram: {notify.send_message(hello)}\n")
 
     done = load_done()
     out_path = Path(args.out)
@@ -167,6 +202,7 @@ def main() -> None:
 
     started = time.time()
     written = requests_made = 0
+    pending: list = []          # строки, ещё не ушедшие порцией в Telegram
     with out_path.open("a", newline="", encoding="utf-8") as handle, \
             PROGRESS.open("a", encoding="utf-8") as progress:
         writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
@@ -204,7 +240,9 @@ def main() -> None:
                         if key in done:
                             continue
                         done.add(key)
-                        writer.writerow(to_listing(item, next_id).__dict__)
+                        listing = to_listing(item, next_id)
+                        writer.writerow(listing.__dict__)
+                        pending.append(listing)
                         progress.write(key + "\n")
                         next_id += 1
                         written += 1
@@ -214,14 +252,34 @@ def main() -> None:
 
                     print(f"  {city}/{section}: страница {page} -> "
                           f"+{fresh} (всего {written + len(done) - fresh})")
+
+                    # Порция уходит файлом по мере накопления: так видно,
+                    # что собирается именно нужное, уже на пятидесятой
+                    # строке, а не на тридцатитысячной.
+                    while args.telegram and len(pending) >= args.chunk:
+                        batch, pending = pending[:args.chunk], pending[args.chunk:]
+                        chunk_path = send_chunk(batch, len(done))
+                        print(f"      порция {len(batch)} строк -> "
+                              f"{chunk_path}")
+
                     if not fresh:
                         break        # выдача кончилась или пошли повторы
                     time.sleep(args.pause)
 
     elapsed = time.time() - started
-    print(f"\nЗаписано за прогон: {written}, запросов: {requests_made}, "
-          f"за {elapsed / 60:.1f} мин")
+    summary = (f"Записано за прогон: {written}, запросов: {requests_made}, "
+               f"за {elapsed / 60:.1f} мин. Всего в файле: {len(done)}")
+    print(f"\n{summary}")
     print(f"CSV: {out_path}")
+
+    if args.telegram and notify.enabled():
+        if pending:
+            print(f"      остаток {len(pending)} строк -> "
+                  f"{send_chunk(pending, len(done))}")
+        notify.send_message(summary)
+        # Итоговый файл целиком — ради него всё и затевалось.
+        print(f"telegram: весь CSV -> "
+              f"{notify.send_file(out_path, f'Итог: {len(done)} объявлений')}")
 
 
 if __name__ == "__main__":
