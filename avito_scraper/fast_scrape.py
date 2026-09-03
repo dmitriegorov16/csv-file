@@ -44,6 +44,19 @@ import proxy_pool
 from scraper import (CSV_FIELDS, DATA_DIR, OUTPUT_CSV, URLS_FILE, Listing,
                      capitalize_city)
 
+try:
+    # brotli: без него нельзя обещать серверу Accept-Encoding: br —
+    # он ответит сжатием, которое мы не распакуем, и полноценная
+    # страница превратится в мусор, который код примет за пустую.
+    import brotli  # noqa: F401
+    HAVE_BROTLI = True
+except ImportError:
+    try:
+        import brotlicffi  # noqa: F401
+        HAVE_BROTLI = True
+    except ImportError:
+        HAVE_BROTLI = False
+
 DONE_FILE = DATA_DIR / "done.txt"          # append-only: по строке на ссылку
 COUNTER_FILE = DATA_DIR / "counter.json"   # только следующий id
 
@@ -58,7 +71,7 @@ HEADERS = {
                "image/avif,image/webp,image/apng,*/*;q=0.8,"
                "application/signed-exchange;v=b3;q=0.7"),
     "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Encoding": "gzip, deflate",   # br добавляется ниже, если есть чем распаковать
     "Cache-Control": "max-age=0",
     "Connection": "keep-alive",
     "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
@@ -80,13 +93,17 @@ MOBILE_HEADERS = {
     "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
                "*/*;q=0.8"),
     "Accept-Language": "ru-RU,ru;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Encoding": "gzip, deflate",
     "Connection": "keep-alive",
     "Sec-Fetch-Dest": "document",
     "Sec-Fetch-Mode": "navigate",
     "Sec-Fetch-Site": "none",
     "Upgrade-Insecure-Requests": "1",
 }
+
+if HAVE_BROTLI:
+    HEADERS["Accept-Encoding"] = "gzip, deflate, br"
+    MOBILE_HEADERS["Accept-Encoding"] = "gzip, deflate, br"
 
 FIREWALL_MARKERS = ("Доступ ограничен", "js-firewall-form", "проверка безопасности")
 
@@ -354,6 +371,7 @@ try:
     HAVE_REQUESTS = True
 except ImportError:            # без requests остаются только HTTP-прокси
     HAVE_REQUESTS = False
+
 
 try:
     import socks  # noqa: F401  (PySocks — нужен requests для socks5://)
