@@ -380,6 +380,7 @@ class RotatingSession:
 
 bytes_downloaded = 0
 bytes_lock = threading.Lock()
+saved_empty = False
 
 
 def _count_bytes(size: int) -> None:
@@ -434,6 +435,18 @@ def fetch(server: Optional[str], url: str, timeout: int, head_bytes: int = 0):
     if any(marker in body for marker in FIREWALL_MARKERS):
         return "", "фаервол"
     if "og:title" not in body:
+        # 200, но объявления в ответе нет. Надо понять, что это:
+        # снятое объявление, редирект или что-то ещё — сохраняем первую
+        # такую страницу, дальше разбираем глазами
+        global saved_empty
+        if not saved_empty:
+            saved_empty = True
+            try:
+                (DATA_DIR / "empty_200.html").write_text(body, encoding="utf-8")
+                print(f"  [!] 200 без данных, страница сохранена в "
+                      f"{DATA_DIR / 'empty_200.html'}")
+            except Exception:
+                pass
         return "", "без данных"
     return body, ""
 
@@ -453,6 +466,10 @@ def main() -> None:
     parser.add_argument("--head-bytes", type=int, default=0,
                         help="качать только первые N байт страницы (Range-запрос); "
                              "нужные поля лежат в <head>, это экономит платный трафик. Разумно 60000")
+    parser.add_argument("--pace", type=float, default=0.0,
+                        help="пауза перед каждым запросом в потоке, сек. "
+                             "Пул мобильных IP небольшой, и частые запросы "
+                             "выжигают его быстрее, чем адреса восстанавливаются")
     parser.add_argument("--direct", action="store_true",
                         help="без прокси, напрямую с этой машины")
     parser.add_argument("--cooldown", type=float, default=0.0,
@@ -569,6 +586,8 @@ def main() -> None:
                     if server is None:
                         results.put((url, None, "прокси кончились"))
                         break
+                if args.pace:
+                    time.sleep(args.pace)
                 body, error = fetch(server, url, args.timeout, args.head_bytes)
                 if body:
                     if ring is not None:
