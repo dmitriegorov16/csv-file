@@ -111,6 +111,11 @@ def main() -> None:
                         help="сбор пойдёт через адрес из списка провайдера")
     args = parser.parse_args()
 
+    # Вывод в файл Python буферизует, и лог фонового бота остаётся пустым
+    # ровно тогда, когда он нужнее всего — когда что-то пошло не так.
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
     if not notify.enabled():
         sys.exit("Нужен TELEGRAM_TOKEN")
     if not os.environ.get("RUCAPTCHA_API_KEY"):

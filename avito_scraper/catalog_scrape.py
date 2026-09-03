@@ -30,6 +30,7 @@ import argparse
 import csv
 import json
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -197,6 +198,11 @@ def main() -> None:
     parser.add_argument("--proxy-list-url", default="",
                         help="взять случайный адрес из списка провайдера")
     args = parser.parse_args()
+
+    # то же самое для сбора: он идёт часами в фоне, и его лог должен
+    # писаться по мере работы, а не выгружаться в конце
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     session, _ = open_session(args.proxy, args.proxy_list_url)
