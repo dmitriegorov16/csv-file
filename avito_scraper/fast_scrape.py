@@ -121,11 +121,16 @@ TAG_RE = re.compile(r"<[^>]+>")
 def meta_content(page_html: str, attr: str, value: str) -> str:
     key = f"{attr}={value}"
     if key not in META_RE_CACHE:
+        # Без DOTALL и без ".*?": на странице в 700 КБ одной строкой такая
+        # регулярка при отсутствии совпадения уходит в катастрофический
+        # перебор и считает минутами. Содержимое атрибута не может
+        # содержать кавычку, которой закрыто, поэтому [^"\']* и точнее,
+        # и линейно по времени.
         META_RE_CACHE[key] = re.compile(
-            r'<meta[^>]+(?:%s=["\']%s["\'][^>]+content=["\'](.*?)["\']'
-            r'|content=["\'](.*?)["\'][^>]+%s=["\']%s["\'])'
+            r'<meta[^>]{0,400}?(?:%s=["\']%s["\'][^>]{0,400}?content=["\']([^"\']*)["\']'
+            r'|content=["\']([^"\']*)["\'][^>]{0,400}?%s=["\']%s["\'])'
             % (attr, re.escape(value), attr, re.escape(value)),
-            re.IGNORECASE | re.DOTALL)
+            re.IGNORECASE)
     match = META_RE_CACHE[key].search(page_html)
     if not match:
         return ""
