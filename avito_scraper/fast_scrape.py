@@ -35,6 +35,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict
 from typing import Optional
@@ -335,6 +336,48 @@ def _proxy_dict(server: str) -> dict:
     return {"http": server, "https": server}
 
 
+# Только последнее вхождение и только в конце логина. У провайдеров
+# встречается "...-hold-session-session-XXXX", и подмена по первому
+# совпадению ломала строку, оставляя старую сессию нетронутой.
+SESSION_RE = re.compile(r"(session-)([A-Za-z0-9]+)$")
+
+
+class RotatingSession:
+    """Мобильный прокси с ротацией IP через смену сессии.
+
+    Измерено на живом трафике: с мобильного IP Avito отдаёт страницу, но
+    буквально следующий запрос с того же адреса ловит 429, а дальше 439.
+    То есть один IP — это одна-две карточки, и весь сбор держится на
+    быстрой смене адреса.
+
+    У таких прокси IP привязан к строке сессии в логине: другая строка —
+    другой адрес выхода. Поэтому ротация здесь бесплатная и мгновенная,
+    достаточно подставить новое случайное значение.
+
+    Логин берётся как шаблон: либо с явным {session}, либо (как в выдаче
+    провайдеров) с готовым куском session-XXXX, который и подменяется.
+    """
+
+    def __init__(self, server: str, username: str, password: str):
+        self.server = server.split("://")[-1]
+        self.scheme = server.split("://")[0] if "://" in server else "http"
+        self.password = password
+        if "{session}" in username:
+            self.template = username
+        elif SESSION_RE.search(username):
+            self.template = SESSION_RE.sub(r"\1{session}", username, count=1)
+        else:
+            # ротировать нечего — работаем одним адресом
+            self.template = username
+        self.rotatable = "{session}" in self.template
+
+    def make(self) -> str:
+        session = f"{random.randrange(16 ** 12):012x}"
+        username = self.template.format(session=session) if self.rotatable else self.template
+        return (f"{self.scheme}://{urllib.parse.quote(username, safe='')}:"
+                f"{urllib.parse.quote(self.password, safe='')}@{self.server}")
+
+
 bytes_downloaded = 0
 bytes_lock = threading.Lock()
 
@@ -430,8 +473,22 @@ def main() -> None:
         print("Всё из очереди уже обработано.")
         return
 
+    rotator = None
+    import os
+    if (os.environ.get("AVITO_PROXY_SERVER")
+            and os.environ.get("AVITO_PROXY_USERNAME") and not args.direct):
+        rotator = RotatingSession(os.environ["AVITO_PROXY_SERVER"],
+                                  os.environ["AVITO_PROXY_USERNAME"],
+                                  os.environ.get("AVITO_PROXY_PASSWORD", ""))
+        print("[1/2] мобильный прокси со сменой сессии на каждый запрос"
+              if rotator.rotatable else
+              "[1/2] прокси из переменных окружения (ротация недоступна: "
+              "в логине нет session-...)")
+        mine, servers = [], []
     ring = None
-    if args.direct:
+    if rotator is not None:
+        pass
+    elif args.direct:
         # напрямую с этой машины: нужно, когда IP и так подходящий —
         # мобильный прокси на роутере, телефон в режиме модема и т.п.
         print("[1/2] без прокси, напрямую с этой машины")
@@ -499,7 +556,9 @@ def main() -> None:
             for _ in range(args.attempts):
                 if stop.is_set():
                     return
-                if ring is None:
+                if rotator is not None:
+                    server = rotator.make()
+                elif ring is None:
                     server = None
                 else:
                     server = ring.take()
@@ -513,6 +572,8 @@ def main() -> None:
                     results.put((url, body, ""))
                     break
                 note(error)
+                if rotator is not None:
+                    continue       # просто берём следующий IP
                 if ring is None:
                     break          # свой IP менять не на что
                 ring.punish(server)
