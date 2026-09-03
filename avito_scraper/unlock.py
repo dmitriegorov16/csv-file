@@ -74,6 +74,32 @@ def headers_for(url: str) -> dict:
             "Referer": "https://www.avito.ru/moskva/avtomobili"}
 
 
+class NoAnswer:
+    """Ответа не было: прокси мёртвая, сеть отвалилась, вышло время.
+
+    Прикидывается ответом со статусом 0, чтобы вызывающий код разбирал
+    один вид результата, а не ловил исключения на каждом запросе. Мёртвая
+    прокся не должна ронять многочасовой сбор — она должна значить
+    «возьми следующую»."""
+
+    status_code = 0
+    text = ""
+    content = b""
+
+    def __init__(self, reason: str = ""):
+        self.reason = reason
+
+    def json(self):
+        return {}
+
+
+def get(session, url: str, headers: dict, timeout: int):
+    try:
+        return session.get(url, headers=headers, timeout=timeout)
+    except Exception as exc:
+        return NoAnswer(type(exc).__name__)
+
+
 def ensure_access(session, url: str, rounds: int = 4, verbose: bool = True,
                   timeout: int = 30):
     """Добиться ответа с данными, проходя проверки по мере их появления.
@@ -81,7 +107,11 @@ def ensure_access(session, url: str, rounds: int = 4, verbose: bool = True,
     Возвращает последний ответ. Сколько именно проверок попросят, заранее
     неизвестно: на разных адресах и в разное время бывает по-разному."""
     headers = headers_for(url)
-    response = session.get(url, headers=headers, timeout=timeout)
+    response = get(session, url, headers, timeout)
+    if isinstance(response, NoAnswer):
+        if verbose:
+            print(f"   сеть молчит: {response.reason}")
+        return response
 
     for step in range(1, rounds + 1):
         if response.status_code == 200:
@@ -104,12 +134,41 @@ def ensure_access(session, url: str, rounds: int = 4, verbose: bool = True,
             print(f"   [{step}] {what}: {note}")
         if not solved:
             return response
-        response = session.get(url, headers=headers, timeout=timeout)
+        response = get(session, url, headers, timeout)
+        if isinstance(response, NoAnswer):
+            if verbose:
+                print(f"   [{step}] сеть молчит: {response.reason}")
+            return response
         if verbose:
             print(f"   [{step}] после проверки: {response.status_code}, "
                   f"{len(response.content)} байт")
 
     return response
+
+
+def open_session(proxy: str = "", proxy_list_url: str = "", attempts: int = 6,
+                 probe_url: str = CATALOG, verbose: bool = True):
+    """Сессия, через которую Avito реально отвечает.
+
+    Прокси из списка бывают мертвы для конкретного направления: адрес
+    отзывается, ipinfo через него работает, а до Avito трафик не идёт.
+    Проверять это заранее отдельным запросом смысла нет — проверка и есть
+    первый полезный запрос, поэтому пробуем открыть доступ и, если не
+    вышло, берём следующий адрес."""
+    for attempt in range(1, attempts + 1):
+        session = build_session(proxy, proxy_list_url, verbose=verbose)
+        response = ensure_access(session, probe_url, verbose=verbose)
+        if response.status_code == 200:
+            if verbose:
+                print("доступ открыт\n")
+            return session, response
+        if verbose:
+            reason = getattr(response, "reason", response.status_code)
+            print(f"[{attempt}/{attempts}] не вышло ({reason})"
+                  + (", беру следующий адрес\n" if proxy_list_url else "\n"))
+        if not proxy_list_url:
+            break        # менять нечего: адрес один
+    return None, None
 
 
 def main() -> None:

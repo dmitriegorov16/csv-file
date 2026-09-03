@@ -37,7 +37,7 @@ import requests
 
 import notify
 from scraper import CSV_FIELDS, DATA_DIR, Listing
-from unlock import build_session, ensure_access
+from unlock import ensure_access, open_session
 
 BASE = "https://www.avito.ru"
 CATEGORY_TREE = BASE + "/web/1/category/tree"
@@ -199,7 +199,10 @@ def main() -> None:
     args = parser.parse_args()
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    session = build_session(args.proxy, args.proxy_list_url)
+    session, _ = open_session(args.proxy, args.proxy_list_url)
+    if session is None:
+        raise SystemExit("Доступ к Avito не открылся ни через один адрес. "
+                         "Подождите и повторите.")
 
     if args.categories:
         sections = [(int(c), f"категория {c}")

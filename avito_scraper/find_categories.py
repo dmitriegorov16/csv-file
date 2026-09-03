@@ -25,7 +25,7 @@ import time
 import requests
 
 from scraper import DATA_DIR
-from unlock import build_session, ensure_access
+from unlock import ensure_access, open_session
 
 BASE = "https://www.avito.ru"
 OUT = DATA_DIR / "categories.json"
@@ -65,20 +65,15 @@ def main() -> None:
     args = parser.parse_args()
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    session = build_session(args.proxy, args.proxy_list_url)
-
-    # Сначала открываем доступ один раз и вслух. Перебирать сотню номеров,
-    # не зная, пускают ли нас вообще, бессмысленно: все ответы будут
-    # одинаково пустыми, и причина утонет. categoryId=9 — заведомо рабочий
-    # раздел, на нём и проверяем.
-    print("разогрев: открываю доступ на заведомо рабочем разделе")
-    name, code = probe(session, 9, args.location, verbose=True)
-    if code != 200:
-        print(f"\nДоступ не открылся ({code}). Перебор ничего не даст.")
-        print("Обычно это значит, что IP в жёстком режиме: подождите "
-              "10–15 минут и повторите.")
+    # Сначала открываем доступ и только потом перебираем номера:
+    # проверять сотню разделов, не зная, пускают ли нас вообще,
+    # бессмысленно — все ответы будут одинаково пустыми.
+    print("разогрев: ищу адрес, через который Avito отвечает")
+    session, _ = open_session(args.proxy, args.proxy_list_url)
+    if session is None:
+        print("Доступ не открылся ни через один адрес. Перебор ничего не даст.")
+        print("Подождите 10–15 минут и повторите — или запустите без прокси.")
         return
-    print(f"   доступ есть, раздел 9 — «{name}»\n")
 
     working = []
 

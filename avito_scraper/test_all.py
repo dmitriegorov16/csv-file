@@ -234,6 +234,23 @@ def test_status_report() -> None:
     check("пустые колонки названы", "price" in text and "address" in text)
 
 
+def test_dead_proxy_does_not_crash() -> None:
+    print("\nМёртвая прокси:")
+    import unlock
+
+    class DeadSession:
+        proxies = {}
+
+        def get(self, *args, **kwargs):
+            raise TimeoutError("read timed out")
+
+    response = unlock.ensure_access(DeadSession(), "https://www.avito.ru/x",
+                                    verbose=False)
+    check("вместо исключения — неудачный ответ", response.status_code == 0)
+    check("причина названа", response.reason == "TimeoutError", response.reason)
+    check("json() не роняет разбор", response.json() == {})
+
+
 def test_bot_commands() -> None:
     print("\nКоманды бота:")
     import bot
@@ -266,6 +283,7 @@ def main() -> None:
     test_url_meta()
     test_sitemap()
     test_status_report()
+    test_dead_proxy_does_not_crash()
     test_bot_commands()
 
     print(f"\n{'=' * 58}")
