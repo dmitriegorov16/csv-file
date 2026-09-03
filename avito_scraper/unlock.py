@@ -68,6 +68,29 @@ def build_session(proxy: str = "", proxy_list_url: str = "", verbose: bool = Tru
     return session
 
 
+def find_items(data) -> list:
+    """Список объявлений из ответа каталога, где бы он ни лежал.
+
+    Брать data["items"] с верхнего уровня оказалось неверно: ответ
+    вложенный, и такой запрос молча даёт пустоту — из-за чего живой
+    доступ выглядел как «разделов не существует». Ищем по всему дереву:
+    структура ответа у Avito уже менялась и поменяется снова."""
+    if isinstance(data, dict):
+        found = data.get("items")
+        if isinstance(found, list):
+            return found
+        for value in data.values():
+            found = find_items(value)
+            if found:
+                return found
+    elif isinstance(data, list):
+        for value in data:
+            found = find_items(value)
+            if found:
+                return found
+    return []
+
+
 def headers_for(url: str) -> dict:
     return {"User-Agent": DESKTOP_UA, "Accept": "application/json",
             "X-Requested-With": "XMLHttpRequest",

@@ -234,6 +234,17 @@ def test_status_report() -> None:
     check("пустые колонки названы", "price" in text and "address" in text)
 
 
+def test_find_items() -> None:
+    print("\nПоиск объявлений в ответе каталога:")
+    from unlock import find_items
+
+    check("на верхнем уровне", len(find_items({"items": [1, 2, 3]})) == 3)
+    # так ответ и устроен на самом деле — вложенно
+    check("вложенный", len(find_items({"result": {"catalog": {"items": [1, 2]}}})) == 2)
+    check("нет списка — пусто", find_items({"a": {"b": 1}}) == [])
+    check("не роняется на пустом ответе", find_items({}) == [])
+
+
 def test_dead_proxy_does_not_crash() -> None:
     print("\nМёртвая прокси:")
     import unlock
@@ -279,6 +290,7 @@ def main() -> None:
     test_url_meta()
     test_sitemap()
     test_status_report()
+    test_find_items()
     test_dead_proxy_does_not_crash()
     test_bot_module()
 

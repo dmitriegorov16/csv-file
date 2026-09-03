@@ -25,7 +25,7 @@ import time
 import requests
 
 from scraper import DATA_DIR
-from unlock import ensure_access, open_session
+from unlock import ensure_access, find_items, open_session
 
 BASE = "https://www.avito.ru"
 OUT = DATA_DIR / "categories.json"
@@ -44,7 +44,7 @@ def probe(session, category_id: int, location_id: int, timeout: int = 30,
     if response.status_code != 200:
         return None, response.status_code
     try:
-        items = response.json().get("items") or []
+        items = find_items(response.json())
     except Exception:
         return None, "не JSON"
     for item in items:

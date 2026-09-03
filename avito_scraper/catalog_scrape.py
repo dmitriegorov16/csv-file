@@ -38,7 +38,7 @@ import requests
 
 import notify
 from scraper import CSV_FIELDS, DATA_DIR, Listing
-from unlock import ensure_access, open_session
+from unlock import ensure_access, find_items, open_session
 
 BASE = "https://www.avito.ru"
 
@@ -281,7 +281,7 @@ def main() -> None:
                         break
                     refused = 0
                     try:
-                        items = response.json().get("items") or []
+                        items = find_items(response.json())
                     except Exception:
                         break
 
