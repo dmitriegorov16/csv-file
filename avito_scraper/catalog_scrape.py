@@ -227,7 +227,7 @@ def main() -> None:
     print(f"уже собрано ранее: {len(done)}; цель: {args.limit}\n")
 
     started = time.time()
-    written = requests_made = 0
+    written = requests_made = refused = 0
     pending: list = []          # строки, ещё не ушедшие порцией в Telegram
     with out_path.open("a", newline="", encoding="utf-8") as handle, \
             PROGRESS.open("a", encoding="utf-8") as progress:
@@ -250,7 +250,23 @@ def main() -> None:
                     if response.status_code != 200:
                         print(f"  {city}/{section}: страница {page} -> "
                               f"{response.status_code}, дальше не иду")
+                        refused += 1
+                        # Адрес мог умереть посреди прогона: прокси живут
+                        # недолго. Несколько отказов подряд значат, что
+                        # дело в адресе, а не в разделе, — берём новый и
+                        # проходим проверки заново.
+                        if refused >= 3:
+                            print("      три отказа подряд — меняю адрес")
+                            fresh_session, _ = open_session(
+                                args.proxy, args.proxy_list_url, verbose=True)
+                            if fresh_session is None:
+                                print("      новый адрес не открылся, "
+                                      "останавливаюсь")
+                                raise SystemExit(1)
+                            session = fresh_session
+                            refused = 0
                         break
+                    refused = 0
                     try:
                         items = response.json().get("items") or []
                     except Exception:
