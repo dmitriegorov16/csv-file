@@ -559,6 +559,11 @@ def main() -> None:
     parser.add_argument("--head-bytes", type=int, default=0,
                         help="качать только первые N байт страницы (Range-запрос); "
                              "нужные поля лежат в <head>, это экономит платный трафик. Разумно 60000")
+    parser.add_argument("--proxy-list-url", default="",
+                        help="ссылка провайдера, отдающая список прокси текстом; "
+                             "можно задать и через AVITO_PROXY_LIST_URL")
+    parser.add_argument("--strikes", type=int, default=2,
+                        help="сколько неудач подряд до выбрасывания адреса из пула")
     parser.add_argument("--mobile", action="store_true",
                         help="представляться телефоном (iPhone Safari). Нужно, когда\n"
                              "работаем через мобильный прокси: десктопный браузер\n"
@@ -619,10 +624,24 @@ def main() -> None:
                 print(f"  {name}")
             sys.exit(1)
 
+    list_url = (args.proxy_list_url
+                or os.environ.get("AVITO_PROXY_LIST_URL", "")).strip()
     env_server = os.environ.get("AVITO_PROXY_SERVER", "").strip()
     env_user = os.environ.get("AVITO_PROXY_USERNAME", "").strip()
 
-    if env_server and env_user and not args.direct:
+    if list_url and not args.direct:
+        print("[1/2] качаю список прокси по ссылке провайдера")
+        try:
+            mine = proxy_pool.load_from_url(list_url)
+        except Exception as exc:
+            sys.exit(f"Не смог скачать список: {type(exc).__name__}: {exc}")
+        if not mine:
+            sys.exit("По ссылке не нашлось ни одного адреса — проверьте формат.")
+        servers = list(mine)
+        print(f"      получено адресов: {len(servers)}")
+        ring = ProxyRing(servers, priority=None, cooldown=args.cooldown,
+                         strikes=args.strikes)
+    elif env_server and env_user and not args.direct:
         rotator = RotatingSession(env_server, env_user,
                                   os.environ.get("AVITO_PROXY_PASSWORD", ""))
         if rotator.rotatable:
@@ -659,7 +678,8 @@ def main() -> None:
                   f"      часто не умеют HTTPS, без которого Avito не открыть.\n"
                   f"      Поставьте:  pip install PySocks\n")
 
-        ring = ProxyRing(servers, priority=mine or None, cooldown=args.cooldown)
+        ring = ProxyRing(servers, priority=mine or None, cooldown=args.cooldown,
+                         strikes=args.strikes)
         kinds: dict = {}
         for server in servers:
             kinds[server.split("://")[0]] = kinds.get(server.split("://")[0], 0) + 1

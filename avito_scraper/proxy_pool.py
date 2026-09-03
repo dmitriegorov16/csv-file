@@ -255,6 +255,34 @@ def load_my_proxies() -> list:
     return servers
 
 
+def load_from_url(url: str, timeout: int = 45) -> list:
+    """Список прокси по ссылке провайдера.
+
+    Многие сервисы отдают выданные вам адреса обычным текстовым файлом с
+    фильтрами прямо в URL (тип, страна, количество). Это лучше одного
+    статичного адреса: с одного IP Avito отдаёт примерно одну карточку,
+    поэтому решает ширина пула, а не качество отдельного адреса.
+
+    Формат строк бывает разный — ip:port, ip:port:логин:пароль или полный
+    URL со схемой; разбираем все три."""
+    text = _download(url, deadline=timeout)
+    servers = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "://" in line:
+            servers.append(line)
+            continue
+        parts = line.split(":")
+        if len(parts) == 2:
+            servers.append(f"http://{parts[0]}:{parts[1]}")
+        elif len(parts) == 4:
+            host, port, user, password = parts
+            servers.append(f"http://{user}:{password}@{host}:{port}")
+    return servers
+
+
 def load_working() -> list[str]:
     if not WORKING_FILE.exists():
         return []
