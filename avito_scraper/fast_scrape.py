@@ -335,29 +335,55 @@ def _proxy_dict(server: str) -> dict:
     return {"http": server, "https": server}
 
 
-def fetch(server: str, url: str, timeout: int):
+bytes_downloaded = 0
+bytes_lock = threading.Lock()
+
+
+def _count_bytes(size: int) -> None:
+    global bytes_downloaded
+    with bytes_lock:
+        bytes_downloaded += size
+
+
+def fetch(server: Optional[str], url: str, timeout: int, head_bytes: int = 0):
     """Возвращает (html, '') либо ('', причина).
 
     SOCKS-прокси качаются через requests+PySocks: urllib их не умеет
     вообще, а именно они для нас важнее всего — обычные HTTP-прокси часто
     не поддерживают CONNECT, без которого HTTPS (а Avito только по HTTPS)
-    невозможен в принципе."""
-    if server.startswith("socks") and not HAVE_REQUESTS:
+    невозможен в принципе.
+
+    head_bytes > 0 — качать только начало страницы Range-запросом. Все
+    нужные поля (og-теги, JSON-LD) лежат в <head>, то есть в первых
+    десятках килобайт, а весь документ весит в разы больше. На платном
+    резидентском трафике это прямая экономия: разница между "хватит
+    гигабайта" и "не хватит".
+    """
+    if server and server.startswith("socks") and not HAVE_REQUESTS:
         return "", "нет requests для socks"
+
+    headers = dict(HEADERS)
+    if head_bytes:
+        headers["Range"] = f"bytes=0-{head_bytes - 1}"
+    proxies = _proxy_dict(server) if server else None
 
     try:
         if HAVE_REQUESTS:
-            response = requests.get(url, headers=HEADERS, proxies=_proxy_dict(server),
+            response = requests.get(url, headers=headers, proxies=proxies,
                                     timeout=timeout, allow_redirects=True)
-            if response.status_code != 200:
+            # 206 — сервер отдал запрошенный кусок, 200 — прислал всё целиком
+            if response.status_code not in (200, 206):
                 return "", f"HTTP {response.status_code}"
+            _count_bytes(len(response.content))
             body = response.text
         else:
-            opener = urllib.request.build_opener(
-                urllib.request.ProxyHandler({"http": server, "https": server}))
-            with opener.open(urllib.request.Request(url, headers=HEADERS),
+            handlers = [urllib.request.ProxyHandler(proxies)] if proxies else []
+            opener = urllib.request.build_opener(*handlers)
+            with opener.open(urllib.request.Request(url, headers=headers),
                              timeout=timeout) as response:
-                body = response.read().decode("utf-8", "replace")
+                raw = response.read()
+            _count_bytes(len(raw))
+            body = raw.decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         return "", f"HTTP {exc.code}"
     except Exception as exc:
@@ -381,6 +407,11 @@ def main() -> None:
                         help="сколько прокси перепробовать на одну карточку")
     parser.add_argument("--only-mine", action="store_true",
                         help="только свои прокси из data/my_proxies.txt, без публичных")
+    parser.add_argument("--head-bytes", type=int, default=0,
+                        help="качать только первые N байт страницы (Range-запрос); "
+                             "нужные поля лежат в <head>, это экономит платный трафик. Разумно 60000")
+    parser.add_argument("--direct", action="store_true",
+                        help="без прокси, напрямую с этой машины")
     parser.add_argument("--cooldown", type=float, default=0.0,
                         help="минимальная пауза между запросами с ОДНОГО адреса, сек; "
                              "бережёт приватные прокси от бана")
@@ -399,8 +430,15 @@ def main() -> None:
         print("Всё из очереди уже обработано.")
         return
 
-    mine = proxy_pool.load_my_proxies()
-    if mine:
+    ring = None
+    if args.direct:
+        # напрямую с этой машины: нужно, когда IP и так подходящий —
+        # мобильный прокси на роутере, телефон в режиме модема и т.п.
+        print("[1/2] без прокси, напрямую с этой машины")
+        mine, servers = [], []
+    else:
+        mine = proxy_pool.load_my_proxies()
+    if not args.direct and mine:
         print(f"[1/2] свои прокси из {proxy_pool.MY_PROXIES_FILE.name}: {len(mine)}")
         if args.only_mine:
             servers = mine
@@ -408,13 +446,13 @@ def main() -> None:
         else:
             print("      добираю публичные списки следом")
             servers = mine + proxy_pool.harvest()
-    else:
+    elif not args.direct:
         print("[1/2] качаю списки прокси")
         servers = proxy_pool.harvest()
-    if not servers:
+    if not servers and not args.direct:
         sys.exit("Не удалось получить ни одного прокси.")
 
-    if not HAVE_SOCKS:
+    if not HAVE_SOCKS and servers:
         socks_count = sum(1 for s in servers if s.startswith("socks"))
         servers = [s for s in servers if not s.startswith("socks")]
         print(f"      ВНИМАНИЕ: PySocks не установлен, поэтому {socks_count} "
@@ -423,14 +461,15 @@ def main() -> None:
               f"      часто не умеют HTTPS, без которого Avito не открыть.\n"
               f"      Поставьте:  pip install PySocks\n")
 
-    ring = ProxyRing(servers, priority=mine if mine else None,
-                     cooldown=args.cooldown)
-    kinds = {}
-    for server in servers:
-        kind = server.split("://")[0]
-        kinds[kind] = kinds.get(kind, 0) + 1
-    breakdown = ", ".join(f"{kind} {count}" for kind, count in sorted(kinds.items()))
-    print(f"      адресов в пуле: {ring.alive} ({breakdown})\n")
+    if not args.direct:
+        ring = ProxyRing(servers, priority=mine if mine else None,
+                         cooldown=args.cooldown)
+        kinds = {}
+        for server in servers:
+            kind = server.split("://")[0]
+            kinds[kind] = kinds.get(kind, 0) + 1
+        breakdown = ", ".join(f"{kind} {count}" for kind, count in sorted(kinds.items()))
+        print(f"      адресов в пуле: {ring.alive} ({breakdown})\n")
 
     print(f"[2/2] собираю {len(todo)} карточек в {args.workers} потоков "
           f"(готово ранее: {len(done)})\n")
@@ -460,16 +499,22 @@ def main() -> None:
             for _ in range(args.attempts):
                 if stop.is_set():
                     return
-                server = ring.take()
-                if server is None:
-                    results.put((url, None, "прокси кончились"))
-                    break
-                body, error = fetch(server, url, args.timeout)
+                if ring is None:
+                    server = None
+                else:
+                    server = ring.take()
+                    if server is None:
+                        results.put((url, None, "прокси кончились"))
+                        break
+                body, error = fetch(server, url, args.timeout, args.head_bytes)
                 if body:
-                    ring.reward(server)
+                    if ring is not None:
+                        ring.reward(server)
                     results.put((url, body, ""))
                     break
                 note(error)
+                if ring is None:
+                    break          # свой IP менять не на что
                 ring.punish(server)
             else:
                 results.put((url, None, "не вышло ни через один прокси"))
@@ -498,7 +543,7 @@ def main() -> None:
                     except queue.Empty:
                         if not any(t.is_alive() for t in threads):
                             raise KeyboardInterrupt
-                        print(f"      ... живых прокси {ring.alive}, "
+                        print(f"      ... живых прокси {ring.alive if ring else 0}, "
                               f"собрано {ok_count}, неудач {fail_count}")
 
                 if body:
@@ -514,13 +559,13 @@ def main() -> None:
                     fail_count += 1
                     if number % 10 == 0 or "кончились" in (error or ""):
                         print(f"  [{number}/{len(todo)}] мимо ({error}), "
-                              f"живых прокси {ring.alive}")
+                              f"живых прокси {ring.alive if ring else 0}")
 
                 done_handle.write(url + "\n")
                 done_handle.flush()
 
                 # пул истощился — докачиваем свежие списки на ходу
-                if ring.alive < args.workers:
+                if ring is not None and ring.alive < args.workers:
                     fresh = proxy_pool.harvest()
                     added = ring.refill(fresh)
                     print(f"      [пул] добавлено свежих адресов: {added} "
@@ -534,6 +579,19 @@ def main() -> None:
     speed = ok_count / elapsed * 60 if elapsed else 0
     print(f"\nСобрано: {ok_count}, неудач: {fail_count}, за {elapsed / 60:.1f} мин "
           f"({speed:.0f} карточек/мин)")
+
+    # расход трафика — ключевая цифра, когда прокси с квотой:
+    # по ней сразу видно, хватит ли пакета на весь тираж
+    if bytes_downloaded:
+        mb = bytes_downloaded / 1024 / 1024
+        print(f"Трафик: {mb:.1f} МБ всего", end="")
+        if ok_count:
+            per = bytes_downloaded / ok_count / 1024
+            total_gb = per * 30000 / 1024 / 1024
+            print(f", {per:.0f} КБ на карточку -> "
+                  f"на 30000 нужно ~{total_gb:.2f} ГБ")
+        else:
+            print()
 
     if reasons:
         total_attempts = sum(reasons.values())
