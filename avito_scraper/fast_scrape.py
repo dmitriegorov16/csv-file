@@ -382,6 +382,38 @@ bytes_downloaded = 0
 bytes_lock = threading.Lock()
 saved_empty = False
 
+# статистика по адресам выхода: сколько их вообще и какие проходят
+ip_stats: dict = {}
+ip_stats_lock = threading.Lock()
+
+
+def exit_ip(server: str, timeout: int = 15) -> str:
+    """Реальный IP, с которого уходит запрос через этот прокси.
+
+    Нужен, чтобы видеть, работает ли ротация и насколько велик пул: если
+    на десять разных сессий приходится три адреса, дело не в настройках,
+    а в том, что у провайдера столько и есть."""
+    try:
+        if HAVE_REQUESTS:
+            response = requests.get("https://ipinfo.io/json", proxies=_proxy_dict(server),
+                                    timeout=timeout)
+            data = response.json()
+        else:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler(_proxy_dict(server)))
+            with opener.open("https://ipinfo.io/json", timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8", "replace"))
+        org = data.get("org", "?")
+        return f"{data.get('ip', '?')} ({org})"
+    except Exception as exc:
+        return f"? ({type(exc).__name__})"
+
+
+def note_ip(ip: str, ok: bool) -> None:
+    with ip_stats_lock:
+        stat = ip_stats.setdefault(ip, {"ok": 0, "fail": 0})
+        stat["ok" if ok else "fail"] += 1
+
 
 def _count_bytes(size: int) -> None:
     global bytes_downloaded
@@ -466,6 +498,9 @@ def main() -> None:
     parser.add_argument("--head-bytes", type=int, default=0,
                         help="качать только первые N байт страницы (Range-запрос); "
                              "нужные поля лежат в <head>, это экономит платный трафик. Разумно 60000")
+    parser.add_argument("--log-ip", action="store_true",
+                        help="перед каждым запросом узнавать реальный IP выхода "
+                             "и печатать связку сессия -> IP -> ответ Avito")
     parser.add_argument("--pace", type=float, default=0.0,
                         help="пауза перед каждым запросом в потоке, сек. "
                              "Пул мобильных IP небольшой, и частые запросы "
@@ -588,7 +623,13 @@ def main() -> None:
                         break
                 if args.pace:
                     time.sleep(args.pace)
+                ip = exit_ip(server) if args.log_ip else ""
                 body, error = fetch(server, url, args.timeout, args.head_bytes)
+                if args.log_ip:
+                    session = server.split('session-')[-1].split(':')[0][:12]
+                    print(f"      сессия {session} -> {ip} -> "
+                          f"{'ОК' if body else error}")
+                    note_ip(ip, bool(body))
                 if body:
                     if ring is not None:
                         ring.reward(server)
@@ -676,6 +717,16 @@ def main() -> None:
                   f"на 30000 нужно ~{total_gb:.2f} ГБ")
         else:
             print()
+
+    if ip_stats:
+        print(f"\nАдреса выхода: {len(ip_stats)} различных на "
+              f"{sum(v['ok'] + v['fail'] for v in ip_stats.values())} запросов")
+        for ip, stat in sorted(ip_stats.items(), key=lambda kv: -kv[1]["ok"]):
+            mark = "ПРОПУСКАЕТ" if stat["ok"] else "блокирует "
+            print(f"  {mark}  {ip:<45} ок {stat['ok']}, отказов {stat['fail']}")
+        if len(ip_stats) < 5:
+            print("\n  Пул адресов крошечный. Ротация сессии их просто перебирает")
+            print("  по кругу, поэтому и не помогает: восстановиться они не успевают.")
 
     if reasons:
         total_attempts = sum(reasons.values())
