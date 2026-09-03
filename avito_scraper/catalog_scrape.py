@@ -315,7 +315,7 @@ def main() -> None:
                     # Порция уходит файлом по мере накопления: так видно,
                     # что собирается именно нужное, уже на пятидесятой
                     # строке, а не на тридцатитысячной.
-                    while args.telegram and len(pending) >= args.chunk:
+                    while args.chunk and len(pending) >= args.chunk:
                         batch, pending = pending[:args.chunk], pending[args.chunk:]
                         chunk_path = send_chunk(batch, len(done))
                         print(f"      порция {len(batch)} строк -> "
@@ -331,10 +331,11 @@ def main() -> None:
     print(f"\n{summary}")
     print(f"CSV: {out_path}")
 
+    if args.chunk and pending:
+        print(f"      остаток {len(pending)} строк -> "
+              f"{send_chunk(pending, len(done))}")
+
     if args.telegram and notify.enabled():
-        if pending:
-            print(f"      остаток {len(pending)} строк -> "
-                  f"{send_chunk(pending, len(done))}")
         notify.send_message(summary)
         # Итоговый файл целиком — ради него всё и затевалось.
         print(f"telegram: весь CSV -> "

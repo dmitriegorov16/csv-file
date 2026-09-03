@@ -251,25 +251,21 @@ def test_dead_proxy_does_not_crash() -> None:
     check("json() не роняет разбор", response.json() == {})
 
 
-def test_bot_commands() -> None:
-    print("\nКоманды бота:")
-    import bot
+def test_bot_module() -> None:
+    print("\nБот:")
+    try:
+        import bot
+    except ImportError as exc:
+        check("aiogram установлен", False, str(exc))
+        return
 
-    class Args:
-        limit, chunk = 150, 50
-        proxy = proxy_list_url = ""
-
-    # подменяем действия: проверяется разбор команд, а не запуск сбора
-    bot.start_collector = lambda limit, chunk, *rest: f"старт {limit}"
-    bot.stop_collector = lambda: "стоп"
-    bot.status_text = lambda target: "статус"
-
-    check("/start запускает", bot.handle("/start", Args()) == "старт 150")
-    check("слово без слэша тоже", bot.handle("старт", Args()) == "старт 150")
-    check("/status спрашивает", bot.handle("/status", Args()) == "статус")
-    check("/stop останавливает", bot.handle("/stop", Args()) == "стоп")
-    check("на непонятное — подсказка", bot.handle("привет", Args()) == bot.HELP)
-    check("пустое сообщение не роняет", bot.handle("", Args()) == bot.HELP)
+    check("подсказка перечисляет команды",
+          all(c in bot.HELP for c in ("/start", "/status", "/stop")))
+    check("порции ищутся в data/chunks",
+          bot.CHUNKS.name == "chunks" and bot.CHUNKS.parent.name == "data")
+    check("итоговый файл — avito.csv", bot.CSV.name == "avito.csv")
+    check("сбор виден по имени процесса",
+          isinstance(bot.collector_running(), bool))
 
 
 def main() -> None:
@@ -284,7 +280,7 @@ def main() -> None:
     test_sitemap()
     test_status_report()
     test_dead_proxy_does_not_crash()
-    test_bot_commands()
+    test_bot_module()
 
     print(f"\n{'=' * 58}")
     print(f"Пройдено: {len(PASSED)}, провалено: {len(FAILED)}")

@@ -31,6 +31,30 @@ API = "https://api.telegram.org/bot{token}/{method}"
 _chat_cache = ""
 
 
+def _force_ipv4() -> None:
+    """Ходить в Telegram только по IPv4.
+
+    На сервере с настроенным, но нерабочим IPv6 Python сначала пробует
+    шестую версию и висит до таймаута, и лишь потом падает обратно на
+    четвёртую. Каждый запрос к Telegram превращался в двадцать секунд
+    ожидания, из-за чего бот выглядел зависшим. curl этого не показывает:
+    он пробует оба протокола сразу и берёт тот, что ответил первым.
+
+    Правка глобальная, но безопасная: она сужает выбор адресов до IPv4,
+    ничего не ломая для тех, у кого шестая версия работает."""
+    import socket
+
+    original = socket.getaddrinfo
+
+    def ipv4_only(host, port, family=0, type=0, proto=0, flags=0):
+        return original(host, port, socket.AF_INET, type, proto, flags)
+
+    socket.getaddrinfo = ipv4_only
+
+
+_force_ipv4()
+
+
 def token() -> str:
     return os.environ.get("TELEGRAM_TOKEN", "").strip()
 
