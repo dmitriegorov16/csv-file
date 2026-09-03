@@ -51,9 +51,33 @@ def main() -> None:
                         help="сколько раз попробовать поймать задачу")
     parser.add_argument("--pause", type=float, default=20.0,
                         help="пауза между попытками, секунд")
+    parser.add_argument("--proxy", default="",
+                        help="ходить через этот прокси, например "
+                             "http://1.2.3.4:8080. Репутация адреса решает, "
+                             "в каком режиме с нами говорят: датацентровому "
+                             "IP задачу могут не предлагать вовсе")
+    parser.add_argument("--proxy-list-url", default="",
+                        help="взять первый живой адрес из списка провайдера")
     args = parser.parse_args()
 
     session = requests.Session()
+    proxy = args.proxy
+    if not proxy and args.proxy_list_url:
+        import proxy_pool
+        addresses = proxy_pool.load_from_url(args.proxy_list_url)
+        if not addresses:
+            raise SystemExit("по ссылке не нашлось ни одного адреса")
+        proxy = addresses[0]
+        print(f"беру первый адрес из списка: {proxy}\n")
+    if proxy:
+        if "://" not in proxy:
+            proxy = "http://" + proxy
+        session.proxies.update({"http": proxy, "https": proxy})
+        try:
+            ip = session.get("https://ipinfo.io/json", timeout=20).json()
+            print(f"выхожу с {ip.get('ip')} ({ip.get('org')})\n")
+        except Exception as exc:
+            print(f"IP определить не вышло: {type(exc).__name__}\n")
     headers = {"User-Agent": DESKTOP_UA, "Accept": "application/json",
                "X-Requested-With": "XMLHttpRequest",
                "Referer": "https://www.avito.ru/moskva/avtomobili"}
