@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 
 import requests
 
@@ -35,6 +36,36 @@ CATALOG = ("https://www.avito.ru/web/1/js/items"
 
 DESKTOP_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+
+def build_session(proxy: str = "", proxy_list_url: str = "", verbose: bool = True):
+    """Сессия, при необходимости через прокси.
+
+    Режим, в котором с нами разговаривает Avito, определяется репутацией
+    адреса: датацентровый IP после нескольких тысяч запросов уходит в
+    жёсткий режим, где капчу даже не предлагают, а мобильный начинает с
+    обычной проверки. Поэтому возможность сменить адрес нужна каждому
+    сборщику, а не только пробным скриптам."""
+    session = requests.Session()
+    if not proxy and proxy_list_url:
+        import proxy_pool
+        addresses = proxy_pool.load_from_url(proxy_list_url)
+        if not addresses:
+            raise SystemExit("по ссылке провайдера не нашлось ни одного адреса")
+        proxy = random.choice(addresses)
+        if verbose:
+            print(f"прокси из списка: {proxy}")
+    if proxy:
+        if "://" not in proxy:
+            proxy = "http://" + proxy
+        session.proxies.update({"http": proxy, "https": proxy})
+        if verbose:
+            try:
+                info = session.get("https://ipinfo.io/json", timeout=20).json()
+                print(f"выхожу с {info.get('ip')} ({info.get('org')})")
+            except Exception as exc:
+                print(f"IP определить не вышло: {type(exc).__name__}")
+    return session
 
 
 def headers_for(url: str) -> dict:

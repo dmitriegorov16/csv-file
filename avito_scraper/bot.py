@@ -48,13 +48,18 @@ def collector_running() -> bool:
         return False
 
 
-def start_collector(limit: int, chunk: int) -> str:
+def start_collector(limit: int, chunk: int, proxy: str = "",
+                    proxy_list_url: str = "") -> str:
     if collector_running():
         return "Сбор уже идёт. /status — посмотреть, /stop — остановить."
 
     LOG.parent.mkdir(parents=True, exist_ok=True)
     command = [sys.executable, str(HERE / "catalog_scrape.py"),
                "--limit", str(limit), "--chunk", str(chunk), "--telegram"]
+    if proxy:
+        command += ["--proxy", proxy]
+    if proxy_list_url:
+        command += ["--proxy-list-url", proxy_list_url]
     # Процесс переживает завершение бота: сбор на 30000 идёт часами, и
     # привязывать его к жизни пульта неправильно.
     with LOG.open("a", encoding="utf-8") as handle:
@@ -86,7 +91,9 @@ def status_text(target: int) -> str:
 def handle(text: str, args) -> str:
     command = text.strip().split()[0].lower() if text.strip() else ""
     if command in ("/start", "start", "старт"):
-        return start_collector(args.limit, args.chunk)
+        return start_collector(args.limit, args.chunk,
+                               getattr(args, "proxy", ""),
+                               getattr(args, "proxy_list_url", ""))
     if command in ("/status", "status", "статус"):
         return status_text(args.limit)
     if command in ("/stop", "stop", "стоп"):
@@ -99,6 +106,9 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--limit", type=int, default=150)
     parser.add_argument("--chunk", type=int, default=50)
+    parser.add_argument("--proxy", default="")
+    parser.add_argument("--proxy-list-url", default="",
+                        help="сбор пойдёт через адрес из списка провайдера")
     args = parser.parse_args()
 
     if not notify.enabled():

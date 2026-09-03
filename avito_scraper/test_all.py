@@ -240,9 +240,10 @@ def test_bot_commands() -> None:
 
     class Args:
         limit, chunk = 150, 50
+        proxy = proxy_list_url = ""
 
     # подменяем действия: проверяется разбор команд, а не запуск сбора
-    bot.start_collector = lambda limit, chunk: f"старт {limit}"
+    bot.start_collector = lambda limit, chunk, *rest: f"старт {limit}"
     bot.stop_collector = lambda: "стоп"
     bot.status_text = lambda target: "статус"
 

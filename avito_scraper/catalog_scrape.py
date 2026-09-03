@@ -37,7 +37,7 @@ import requests
 
 import notify
 from scraper import CSV_FIELDS, DATA_DIR, Listing
-from unlock import ensure_access
+from unlock import build_session, ensure_access
 
 BASE = "https://www.avito.ru"
 CATEGORY_TREE = BASE + "/web/1/category/tree"
@@ -193,10 +193,13 @@ def main() -> None:
                         help="каждые столько строк отправлять порцию в Telegram")
     parser.add_argument("--telegram", action="store_true",
                         help="слать порции и итоговый файл в Telegram")
+    parser.add_argument("--proxy", default="")
+    parser.add_argument("--proxy-list-url", default="",
+                        help="взять случайный адрес из списка провайдера")
     args = parser.parse_args()
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    session = requests.Session()
+    session = build_session(args.proxy, args.proxy_list_url)
 
     if args.categories:
         sections = [(int(c), f"категория {c}")

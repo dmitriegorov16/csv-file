@@ -25,7 +25,7 @@ import time
 import requests
 
 from scraper import DATA_DIR
-from unlock import ensure_access
+from unlock import build_session, ensure_access
 
 BASE = "https://www.avito.ru"
 OUT = DATA_DIR / "categories.json"
@@ -57,10 +57,15 @@ def main() -> None:
     parser.add_argument("--to", dest="end", type=int, default=120)
     parser.add_argument("--location", type=int, default=637640)
     parser.add_argument("--pause", type=float, default=0.3)
+    parser.add_argument("--proxy", default="",
+                        help="ходить через этот адрес: репутация IP решает, "
+                             "в каком режиме с нами разговаривают")
+    parser.add_argument("--proxy-list-url", default="",
+                        help="взять случайный адрес из списка провайдера")
     args = parser.parse_args()
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    session = requests.Session()
+    session = build_session(args.proxy, args.proxy_list_url)
 
     # Сначала открываем доступ один раз и вслух. Перебирать сотню номеров,
     # не зная, пускают ли нас вообще, бессмысленно: все ответы будут
