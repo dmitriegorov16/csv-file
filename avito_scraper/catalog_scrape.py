@@ -41,7 +41,6 @@ from scraper import CSV_FIELDS, DATA_DIR, Listing
 from unlock import ensure_access, open_session
 
 BASE = "https://www.avito.ru"
-CATEGORY_TREE = BASE + "/web/1/category/tree"
 
 # Крупные города: одной Москвы на 30000 не хватит, а глубже сотой
 # страницы Avito выдачу не отдаёт.
@@ -106,11 +105,11 @@ CATEGORIES_FILE = DATA_DIR / "categories.json"
 def categories(session, verbose: bool = True) -> list:
     """Разделы для обхода.
 
-    Сначала — проверенный список от find_categories.py: там номера, на
-    которые поиск действительно отвечает объявлениями. Справочник
-    /category/tree на эту роль не годится, хотя и выглядит подходящим: у
-    него своя нумерация, и 600 запросов по его идентификаторам вернули
-    ровно ноль объявлений."""
+    Берём проверенный список: номера, на которые поиск действительно
+    отвечает объявлениями. Справочник /category/tree на эту роль не
+    годится, хотя и выглядит подходящим: у него своя нумерация, и обход
+    по ней даёт ровно ноль объявлений на каждой странице — при этом лог
+    выглядит как работа, что хуже честной ошибки."""
     if CATEGORIES_FILE.exists():
         try:
             saved = json.loads(CATEGORIES_FILE.read_text(encoding="utf-8"))
@@ -122,35 +121,43 @@ def categories(session, verbose: bool = True) -> list:
         except Exception:
             pass
 
-    response = ensure_access(session, CATEGORY_TREE, verbose=verbose)
-    if response.status_code != 200:
-        if verbose:
-            print(f"справочник категорий не открылся ({response.status_code}), "
-                  f"беру автомобили")
-        return [(9, "Автомобили")]
-    try:
-        tree = response.json()
-    except Exception:
-        return [(9, "Автомобили")]
-
-    found: list = []
-
-    def walk(node) -> None:
-        if isinstance(node, dict):
-            node_id, name = node.get("id"), node.get("name")
-            if isinstance(node_id, int) and isinstance(name, str):
-                found.append((node_id, name))
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for value in node:
-                walk(value)
-
-    walk(tree)
-    unique = list(dict.fromkeys(found))
+    # Проверенного списка нет — находим его сами. Справочник
+    # /category/tree сюда не годится: его номера поиск не понимает, и
+    # обход по ним даёт нули в каждой строке лога, притворяясь работой.
     if verbose:
-        print(f"категорий в справочнике: {len(unique)}")
-    return unique or [(9, "Автомобили")]
+        print("проверенного списка разделов нет — ищу рабочие номера "
+              "(это займёт пару минут, зато потом сохранится)")
+    from find_categories import probe
+
+    found = []
+    refused = 0
+    for category_id in range(1, 121):
+        name, code = probe(session, category_id, LOCATIONS[0][0])
+        if name:
+            found.append({"id": category_id, "name": name})
+            if verbose:
+                print(f"   {category_id:>4}  {name}")
+            refused = 0
+        elif code != 200:
+            refused += 1
+            if refused >= 5:
+                if verbose:
+                    print("   пять отказов подряд — доступ закрылся, "
+                          "останавливаю поиск")
+                break
+        time.sleep(0.3)
+
+    if found:
+        CATEGORIES_FILE.write_text(
+            json.dumps(found, ensure_ascii=False, indent=2), encoding="utf-8")
+        if verbose:
+            print(f"нашёл разделов: {len(found)}, сохранил в "
+                  f"{CATEGORIES_FILE.name}\n")
+        return [(row["id"], row["name"]) for row in found]
+
+    raise SystemExit(
+        "Не нашлось ни одного рабочего раздела. Собирать нечего: обход по "
+        "выдуманным номерам даёт нули. Попробуйте позже или через другой адрес.")
 
 
 def send_chunk(rows: list, total: int) -> str:
