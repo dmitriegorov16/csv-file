@@ -169,16 +169,24 @@ def path_parts(url: str) -> list:
 
 def city_from_url(url: str) -> str:
     parts = path_parts(url)
-    if not parts:
+    # У настоящей карточки путь всегда /город/категория/slug_id. Если
+    # сегментов меньше, это не карточка (или тестовая заглушка), и
+    # выдумывать город из чего попало нельзя: так рождается "Кс 1".
+    if len(parts) < 2:
         return ""
     slug = parts[0]
+    if re.search(r"\d", slug):
+        return ""
     if slug in ("rossiya", "all", "user", "web", "items"):
         return ""
     return CITY_NAMES.get(slug) or detransliterate(slug)
 
 
 def category_from_url(url: str) -> str:
-    parts = path_parts(url)[1:]
+    all_parts = path_parts(url)
+    if len(all_parts) < 2:
+        return ""
+    parts = all_parts[1:]
     if not parts:
         return ""
     # берём самый конкретный известный раздел, обёртки пропускаем

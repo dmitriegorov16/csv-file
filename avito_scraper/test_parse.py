@@ -101,3 +101,39 @@ def test_mobile_variant():
 
 
 test_mobile_variant()
+
+
+def test_breadcrumbs_and_photo():
+    """Настоящая мобильная карточка: категория только в крошках, а на
+    домене avito.st рядом с фотографиями лежат шрифты."""
+    page_html = (
+        '<html><head>'
+        '<meta property="og:image" content="https://m.avito.ru/icons/touch-icon-512x512.png">'
+        '<link rel="preload" href="https://www.avito.st/s/common/assets/fonts/regular.woff2">'
+        '</head><body>'
+        '<div data-marker="breadcrumbs">'
+        '<span><a href="/">Авито</a></span>'
+        '<span><a href="/volgograd">Волгоград</a></span>'
+        '<span><a href="/volgograd/transport">Транспорт</a></span>'
+        '<span><a href="/volgograd/avtomobili">Автомобили</a></span></div>'
+        '<img src="https://20.img.avito.st/image/1/photo.jpg">'
+        '</body></html>')
+    listing = fs.parse_html(page_html, "https://www.avito.ru/x_1", 8)
+    assert fs.breadcrumbs(page_html) == ["Авито", "Волгоград", "Транспорт", "Автомобили"]
+    assert listing.category == "Автомобили", listing.category
+    assert listing.city == "Волгоград", listing.city
+    assert listing.image.endswith("photo.jpg"), listing.image
+    print("[6] крошки дают категорию и город, шрифт не попадает в image — OK")
+
+
+def test_no_city_from_stub_url():
+    """Заглушка вместо ссылки не должна превращаться в город "Кс 1"."""
+    from url_meta import category_from_url, city_from_url
+    assert city_from_url("https://www.avito.ru/x_1") == ""
+    assert category_from_url("https://www.avito.ru/x_1") == ""
+    assert city_from_url("https://www.avito.ru/volgograd/avtomobili/kia_7654321098") == "Волгоград"
+    print("[7] город из ссылки только когда ссылка настоящая — OK")
+
+
+test_breadcrumbs_and_photo()
+test_no_city_from_stub_url()

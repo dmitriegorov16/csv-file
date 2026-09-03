@@ -117,9 +117,16 @@ TAG_RE = re.compile(r"<[^>]+>")
 # Картинки объявления лежат на своей CDN. Отдельным шаблоном они
 # отличаются от иконок сайта: og:image у мобильной версии — это
 # touch-icon, а не фотография товара.
-PHOTO_RE = re.compile(r'https://[\w.-]*avito\.st/[^"\'\s\\<>]+')
-JUNK_IMAGE_RE = re.compile(r"(icon|logo|placeholder|sprite|favicon|\.svg$)",
-                           re.IGNORECASE)
+# Одного домена avito.st мало: там же лежат шрифты и статика, и первым
+# совпадением оказывался .woff2. Нужна именно фотография: путь /image/
+# или расширение картинки, и точно не из /assets/.
+PHOTO_RE = re.compile(
+    r'https://[\w.-]*avito\.st/[^"\'\s\\<>]*?'
+    r'(?:/image/[^"\'\s\\<>]+|[^"\'\s\\<>]+\.(?:jpe?g|png|webp))',
+    re.IGNORECASE)
+JUNK_IMAGE_RE = re.compile(
+    r"(icon|logo|placeholder|sprite|favicon|/assets/|/fonts/|\.svg|\.woff)",
+    re.IGNORECASE)
 
 # Общесайтовое описание, которое Avito ставит, когда своего у страницы нет.
 # Записать его в поле description значило бы получить 30000 одинаковых строк.
@@ -158,10 +165,17 @@ def strip_tags(fragment: str) -> str:
 
 
 def block_text(page_html: str, marker: str) -> str:
-    """Весь текст элемента с data-marker, включая вложенные теги.
+    """Текст элемента с data-marker, включая вложенные теги."""
+    return strip_tags(block_html(page_html, marker))
+
+
+def block_html(page_html: str, marker: str) -> str:
+    """Внутренний HTML элемента с data-marker.
 
     Наивное "до первого закрывающего тега" тут не годится: описание
-    состоит из нескольких абзацев, и всё после первого </p> терялось бы."""
+    состоит из нескольких абзацев, и всё после первого </p> терялось бы.
+    Разметку возвращаем как есть — хлебные крошки надо разбирать по
+    отдельным ссылкам, а из плоского текста они уже не разделяются."""
     match = re.search(r'<(\w+)[^>]*data-marker=["\']%s["\'][^>]*>' % re.escape(marker),
                       page_html)
     if not match:
@@ -182,9 +196,27 @@ def block_text(page_html: str, marker: str) -> str:
             continue
         depth -= 1
         if depth == 0:
-            return strip_tags(page_html[start:next_close.start()])
+            return page_html[start:next_close.start()]
         position = next_close.end()
-    return strip_tags(page_html[start:limit])
+    return page_html[start:limit]
+
+
+LINK_TEXT_RE = re.compile(r"<a\b[^>]*>(.*?)</a>", re.DOTALL | re.IGNORECASE)
+
+# В крошках первым идёт сам сайт и регион — категорией они не являются.
+NOT_A_CATEGORY = {"авито", "главная", "все объявления", "объявления"}
+
+
+def breadcrumbs(page_html: str) -> list:
+    """Хлебные крошки: ['Авито', 'Волгоград', 'Транспорт', 'Автомобили'].
+
+    Единственное место, где на мобильной странице есть категория:
+    itemprop-разметки там нет вовсе, JSON-LD тоже."""
+    inner = block_html(page_html, "breadcrumbs")
+    if not inner:
+        return []
+    items = [strip_tags(chunk) for chunk in LINK_TEXT_RE.findall(inner)]
+    return [item for item in items if item]
 
 
 def extract_json_ld(page_html: str) -> dict:
@@ -272,9 +304,17 @@ def parse_html(page_html: str, url: str, item_id: int) -> Listing:
         city = address.split(",")[0]
     city = capitalize_city(city)
 
-    crumbs = [strip_tags(b) for b in
-              re.findall(r'itemprop=["\']name["\'][^>]*>([^<]{1,80})<', page_html)]
-    crumbs = [c for c in crumbs if c and c != title]
+    crumbs = breadcrumbs(page_html) or [
+        strip_tags(b) for b in
+        re.findall(r'itemprop=["\']name["\'][^>]*>([^<]{1,80})<', page_html)]
+    crumbs = [c for c in crumbs
+              if c and c != title and c.lower() not in NOT_A_CATEGORY]
+    # последняя крошка — это часто сама модель ("Kia"), а не раздел;
+    # берём последнюю, которая совпала с известным разделом, иначе просто
+    # последнюю: раздел всегда стоит правее региона
+    if not city and len(crumbs) > 1:
+        city = crumbs[0]
+        crumbs = crumbs[1:]
     category = crumbs[-1] if crumbs else ""
     if not category and isinstance(json_ld.get("category"), str):
         category = json_ld["category"]

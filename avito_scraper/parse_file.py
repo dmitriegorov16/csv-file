@@ -17,7 +17,18 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from fast_scrape import parse_html
+from fast_scrape import block_text, meta_content, parse_html
+
+
+def page_url(page_html: str) -> str:
+    """Канонический адрес страницы — из og:url или <link rel=canonical>."""
+    url = meta_content(page_html, "property", "og:url")
+    if url:
+        return url
+    match = re.search(
+        r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)["\']',
+        page_html, re.IGNORECASE)
+    return match.group(1) if match else ""
 
 
 def main() -> None:
@@ -28,7 +39,11 @@ def main() -> None:
     page_html = path.read_text(encoding="utf-8", errors="replace")
     print(f"{path}: {len(page_html)} символов\n")
 
-    listing = parse_html(page_html, "https://www.avito.ru/x_1", 1)
+    # Настоящий URL, а не заглушка: город и категория берутся в том числе
+    # из ссылки, и с "https://www.avito.ru/x_1" они выходили бессмысленными.
+    url = page_url(page_html) or "https://www.avito.ru/x_1"
+    print(f"ссылка: {url}\n")
+    listing = parse_html(page_html, url, 1)
     filled = 0
     for name, value in asdict(listing).items():
         text = " ".join(str(value).split())
@@ -58,6 +73,22 @@ def main() -> None:
         for label, pattern in checks:
             count = len(re.findall(pattern, page_html))
             print(f"  {count:>6}  {label}")
+
+        # og:-теги целиком: их немного, а видно сразу, что страница отдала
+        for name, value in re.findall(
+                r'<meta[^>]+property=["\']og:([^"\']+)["\'][^>]+content=["\']([^"\']*)',
+                page_html, re.IGNORECASE)[:12]:
+            print(f"  og:{name:<12} {value[:70]}")
+
+        # маркеры, где может лежать адрес — самое неочевидное поле
+        near_address = sorted({m for m in re.findall(r'data-marker="([^"]{3,60})"', page_html)
+                               if re.search(r"address|geo|location|delivery|seller",
+                                            m, re.IGNORECASE)})
+        if near_address:
+            print("\n  маркеры, похожие на адрес:")
+            for name in near_address:
+                text = " ".join(block_text(page_html, name).split())[:70]
+                print(f"    {name:<40} {text}")
 
         marker = re.findall(r'data-marker="([^"]{3,40})"', page_html)
         if marker:
