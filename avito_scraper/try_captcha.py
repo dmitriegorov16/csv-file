@@ -47,6 +47,8 @@ def main() -> None:
     parser.add_argument("--url", default=CATALOG)
     parser.add_argument("--proxy", default="")
     parser.add_argument("--save", default="data/catalog.json")
+    parser.add_argument("--quiet", action="store_true",
+                        help="не печатать, что уходит на verify")
     args = parser.parse_args()
 
     if not os.environ.get("RUCAPTCHA_API_KEY"):
@@ -74,7 +76,8 @@ def main() -> None:
         print(f"   /get -> {probe.status_code}: {probe.text[:300]}")
 
         print("\n3) решаю")
-        solved, note = firewall.solve(session, args.url, KNOWN_KEYS)
+        solved, note = firewall.solve(session, args.url, KNOWN_KEYS,
+                                      debug=not args.quiet)
         print(f"   {note}")
         if not solved:
             raise SystemExit("\nне прошли")

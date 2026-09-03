@@ -126,7 +126,8 @@ def _find(data, key: str):
     return None
 
 
-def solve(session, page_url: str, page_html: str, timeout: int = 30) -> tuple:
+def solve(session, page_url: str, page_html: str, timeout: int = 30,
+          debug: bool = False) -> tuple:
     """Пройти капчу в этой сессии. Возвращает (получилось, что случилось).
 
     session — requests.Session с уже настроенным прокси: капчу надо
@@ -175,6 +176,13 @@ def solve(session, page_url: str, page_html: str, timeout: int = 30) -> tuple:
             return False, "внутренняя капча Avito, формат неизвестен"
     except Exception as exc:
         return False, f"rucaptcha: {type(exc).__name__}: {exc}"
+
+    if debug:
+        # Что именно ушло на verify. Когда сервер отвечает "verified":
+        # false, вопрос всегда один: наш формат или их проверка. Без
+        # этого вывода отличить одно от другого нельзя.
+        print(f"      [debug] /get ответил: {json.dumps(descriptor)[:300]}")
+        print(f"      [debug] шлём на verify: {json.dumps(payload)[:600]}")
 
     # X-Cube страница считает кодом на WebGL. Проверяет ли его сервер —
     # неизвестно, поэтому сначала пробуем без него: если дело в нём, это
