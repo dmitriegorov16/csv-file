@@ -76,6 +76,27 @@ def test_catalog_mapping() -> None:
     check("объявление без цены даёт пустую строку",
           to_listing({"urlPath": "/x_1", "title": "т"}, 1).price == "")
 
+    # Город есть не у всех объявлений, а адрес — тем более. Раньше при
+    # отсутствии адреса в колонку падало название города, и она дублировала
+    # соседнюю, изображая данные, которых нет.
+    no_address = to_listing({"urlPath": "/kazan/kvartiry/dvushka_1234567891",
+                             "title": "Квартира",
+                             "location": {"name": "Казань"},
+                             "addressDetailed": {"locationName": "Казань"}}, 2)
+    check("нет адреса — колонка пустая", no_address.address == "",
+          no_address.address)
+    check("город при этом на месте", no_address.city == "Казань")
+
+    no_city = to_listing({"urlPath": "/volgograd/telefony/iphone_1234567892",
+                          "title": "iPhone"}, 3)
+    check("города нет в ответе — берётся из ссылки",
+          no_city.city == "Волгоград", no_city.city)
+
+    same = to_listing({"urlPath": "/perm/knigi/kniga_1234567894", "title": "К",
+                       "location": {"name": "Пермь"},
+                       "geo": {"formattedAddress": "Пермь"}}, 4)
+    check("адрес, равный городу, не дублируется", same.address == "")
+
 
 def test_service_record_skipped() -> None:
     print("\nСлужебная запись в конце выдачи:")

@@ -39,6 +39,7 @@ import requests
 import notify
 from scraper import CSV_FIELDS, DATA_DIR, Listing
 from unlock import ensure_access, find_items, open_session
+from url_meta import city_from_url
 
 BASE = "https://www.avito.ru"
 
@@ -82,8 +83,22 @@ def to_listing(item: dict, item_id: int) -> Listing:
 
     price = (item.get("priceDetailed") or {}).get("value")
     geo = item.get("geo") or {}
-    address = (geo.get("formattedAddress")
-               or (item.get("addressDetailed") or {}).get("locationName", ""))
+    detailed = item.get("addressDetailed") or {}
+
+    # Город: location.name есть не у всех объявлений, поэтому спускаемся
+    # по запасным источникам, а в самом конце берём из ссылки — там он
+    # присутствует всегда, потому что задан структурой адреса Avito.
+    city = (str((item.get("location") or {}).get("name") or "")
+            or str(detailed.get("locationName") or "")
+            or str(geo.get("addressLocality") or "")
+            or city_from_url(url))
+
+    # Адрес — только настоящий. Раньше сюда при его отсутствии падало
+    # название города, и колонка дублировала соседнюю, изображая данные,
+    # которых нет. Пусто честнее.
+    address = str(geo.get("formattedAddress") or "").strip()
+    if address == city:
+        address = ""
 
     return Listing(
         id=item_id,
@@ -94,8 +109,8 @@ def to_listing(item: dict, item_id: int) -> Listing:
         image=best_image(item),
         price="" if price in (None, "") else str(price),
         category=str((item.get("category") or {}).get("name") or ""),
-        city=str((item.get("location") or {}).get("name") or ""),
-        address=str(address or ""),
+        city=city,
+        address=address,
     )
 
 
