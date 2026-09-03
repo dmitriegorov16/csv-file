@@ -349,6 +349,27 @@ except ImportError:
     HAVE_CFFI = False
 
 
+def cffi_profiles() -> list:
+    """Имена профилей, которые понимает установленная версия curl_cffi.
+
+    В разных версиях они пишутся по-разному (safari18_4_ios против
+    safari184_ios), и неверное имя даёт ImpersonateError ещё до того, как
+    запрос уйдёт в сеть — поэтому проверяем заранее."""
+    if not HAVE_CFFI:
+        return []
+    try:
+        import typing
+        from curl_cffi.requests.impersonate import BrowserTypeLiteral
+        return list(typing.get_args(BrowserTypeLiteral))
+    except Exception:
+        pass
+    try:
+        from curl_cffi.requests import BrowserType
+        return [b.value for b in BrowserType]
+    except Exception:
+        return []
+
+
 def _proxy_dict(server: str) -> dict:
     # socks5h означает "резолвить DNS на стороне прокси" — так надёжнее
     # и не светит наружу, какие домены мы запрашиваем
@@ -587,6 +608,17 @@ def main() -> None:
     if args.impersonate and not HAVE_CFFI:
         sys.exit("Для --impersonate нужен curl_cffi:  pip install curl_cffi")
 
+    if args.impersonate:
+        known = cffi_profiles()
+        if known and args.impersonate not in known:
+            mobile_ones = [p for p in known
+                           if any(k in str(p).lower() for k in ("ios", "android"))]
+            print(f"Профиль {args.impersonate!r} эта версия curl_cffi не знает.")
+            print("Доступные мобильные профили:")
+            for name in mobile_ones or known[:20]:
+                print(f"  {name}")
+            sys.exit(1)
+
     env_server = os.environ.get("AVITO_PROXY_SERVER", "").strip()
     env_user = os.environ.get("AVITO_PROXY_USERNAME", "").strip()
 
@@ -789,6 +821,11 @@ def main() -> None:
         # Важно не общее число отказов, а доля тех, кто ДОШЁЛ до Avito и
         # был им отвергнут: именно она показывает, есть ли смысл перебирать
         # адреса дальше. Ответ сервера (HTTP ...) означает, что связь была.
+        local_errors = reasons.get("ImpersonateError", 0)
+        if local_errors:
+            print(f"\n  ВНИМАНИЕ: {local_errors} попыток вообще не ушли в сеть — "
+                  "curl_cffi не принял имя профиля.\n"
+                  "  Это ошибка настройки, а не блокировка.")
         reached = sum(c for r, c in reasons.items() if r.startswith("HTTP ")
                       or r in ("фаервол", "без данных"))
         blocked = sum(c for r, c in reasons.items()
