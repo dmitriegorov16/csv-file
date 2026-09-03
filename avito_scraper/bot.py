@@ -126,7 +126,20 @@ def main() -> None:
     print(f"бот @{username} слушает. Цель: {args.limit}, порция: {args.chunk}")
     print("Отправьте ему /start в Telegram.\n")
 
+    # Telegram хранит непрочитанные сообщения и отдаёт их при запуске.
+    # Без этого бот, поднятый после нескольких неудачных попыток, отвечает
+    # на всю накопившуюся очередь /start подряд — что и выглядит как
+    # «тормозит», хотя он просто разгребает старое.
     offset = 0
+    try:
+        old = notify._call("getUpdates", {"offset": -1, "timeout": 0})
+        for update in old.get("result", []):
+            offset = update["update_id"] + 1
+        if offset:
+            print(f"пропускаю накопившиеся сообщения (до {offset})")
+    except Exception as exc:
+        print(f"не смог пропустить старое: {type(exc).__name__}")
+
     while True:
         try:
             # длинное ожидание: сервер держит запрос, пока не придёт
