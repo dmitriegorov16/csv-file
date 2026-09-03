@@ -31,11 +31,12 @@ BASE = "https://www.avito.ru"
 OUT = DATA_DIR / "categories.json"
 
 
-def probe(session, category_id: int, location_id: int, timeout: int = 30):
+def probe(session, category_id: int, location_id: int, timeout: int = 30,
+          verbose: bool = False):
     """Одно объявление из раздела: есть ли он и как называется."""
     url = (f"{BASE}/web/1/js/items?categoryId={category_id}"
            f"&locationId={location_id}&page=1&limit=1&display=list")
-    response = ensure_access(session, url, verbose=False, timeout=timeout)
+    response = ensure_access(session, url, verbose=verbose, timeout=timeout)
     if response.status_code != 200:
         return None, response.status_code
     try:
@@ -60,15 +61,41 @@ def main() -> None:
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     session = requests.Session()
+
+    # Сначала открываем доступ один раз и вслух. Перебирать сотню номеров,
+    # не зная, пускают ли нас вообще, бессмысленно: все ответы будут
+    # одинаково пустыми, и причина утонет. categoryId=9 — заведомо рабочий
+    # раздел, на нём и проверяем.
+    print("разогрев: открываю доступ на заведомо рабочем разделе")
+    name, code = probe(session, 9, args.location, verbose=True)
+    if code != 200:
+        print(f"\nДоступ не открылся ({code}). Перебор ничего не даст.")
+        print("Обычно это значит, что IP в жёстком режиме: подождите "
+              "10–15 минут и повторите.")
+        return
+    print(f"   доступ есть, раздел 9 — «{name}»\n")
+
     working = []
 
+    refused = 0
     for category_id in range(args.start, args.end + 1):
         name, status = probe(session, category_id, args.location)
         if name:
             working.append({"id": category_id, "name": name})
             print(f"  {category_id:>4}  {name}")
+            refused = 0
         elif status != 200:
             print(f"  {category_id:>4}  — ответ {status}")
+            refused += 1
+            # Подряд идущие отказы значат, что нас снова закрыли, а не что
+            # разделов нет. Дальше перебирать — впустую жечь запросы и
+            # злить фаервол.
+            if refused >= 5:
+                print("\nПять отказов подряд — доступ снова закрыт. "
+                      "Останавливаюсь.")
+                break
+        else:
+            refused = 0
         time.sleep(args.pause)
 
     OUT.write_text(json.dumps(working, ensure_ascii=False, indent=2),
