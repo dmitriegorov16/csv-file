@@ -54,6 +54,17 @@ HEADERS = {
     "Accept-Language": "ru-RU,ru;q=0.9",
 }
 
+# С мобильного IP оператора логично приходить телефоном: запрос с адреса
+# МТС, представляющийся десктопным Chrome под Windows, выглядит ровно так,
+# как настоящий трафик оттуда не выглядит почти никогда.
+MOBILE_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+                   "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
+                   "Mobile/15E148 Safari/604.1"),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9",
+}
+
 FIREWALL_MARKERS = ("Доступ ограничен", "js-firewall-form", "проверка безопасности")
 
 META_RE_CACHE: dict = {}
@@ -432,7 +443,7 @@ def _count_bytes(size: int) -> None:
 
 
 def fetch(server: Optional[str], url: str, timeout: int, head_bytes: int = 0,
-          impersonate: str = ""):
+          impersonate: str = "", mobile: bool = False):
     """Возвращает (html, '') либо ('', причина).
 
     SOCKS-прокси качаются через requests+PySocks: urllib их не умеет
@@ -452,7 +463,7 @@ def fetch(server: Optional[str], url: str, timeout: int, head_bytes: int = 0,
     if impersonate and HAVE_CFFI:
         try:
             response = cffi_requests.get(
-                url, headers=headers if head_bytes else None,
+                url, headers={"Range": f"bytes=0-{head_bytes - 1}"} if head_bytes else None,
                 proxies=_proxy_dict(server) if server else None,
                 impersonate=impersonate, timeout=timeout)
             if response.status_code not in (200, 206):
@@ -467,7 +478,7 @@ def fetch(server: Optional[str], url: str, timeout: int, head_bytes: int = 0,
             return "", "без данных"
         return body, ""
 
-    headers = dict(HEADERS)
+    headers = dict(MOBILE_HEADERS if mobile else HEADERS)
     if head_bytes:
         headers["Range"] = f"bytes=0-{head_bytes - 1}"
     proxies = _proxy_dict(server) if server else None
@@ -527,6 +538,10 @@ def main() -> None:
     parser.add_argument("--head-bytes", type=int, default=0,
                         help="качать только первые N байт страницы (Range-запрос); "
                              "нужные поля лежат в <head>, это экономит платный трафик. Разумно 60000")
+    parser.add_argument("--mobile", action="store_true",
+                        help="представляться телефоном (iPhone Safari). Нужно, когда\n"
+                             "работаем через мобильный прокси: десктопный браузер\n"
+                             "с сотового адреса выглядит неестественно")
     parser.add_argument("--impersonate", default="",
                         help="слать запросы с TLS-отпечатком браузера через "
                              "curl_cffi, например chrome124. Обычный HTTP-клиент "
@@ -661,7 +676,7 @@ def main() -> None:
                     time.sleep(args.pace)
                 ip = exit_ip(server) if args.log_ip else ""
                 body, error = fetch(server, url, args.timeout, args.head_bytes,
-                                    args.impersonate)
+                                    args.impersonate, args.mobile)
                 if args.log_ip:
                     session = server.split('session-')[-1].split(':')[0][:12]
                     print(f"      сессия {session} -> {ip} -> "
