@@ -473,60 +473,64 @@ def main() -> None:
         print("Всё из очереди уже обработано.")
         return
 
-    rotator = None
+    # Три взаимоисключающих режима, в порядке приоритета:
+    #   1. прокси из переменных окружения (мобильный, со сменой сессии)
+    #   2. --direct: напрямую с этой машины
+    #   3. пул адресов: свои из файла и/или публичные списки
     import os
-    if (os.environ.get("AVITO_PROXY_SERVER")
-            and os.environ.get("AVITO_PROXY_USERNAME") and not args.direct):
-        rotator = RotatingSession(os.environ["AVITO_PROXY_SERVER"],
-                                  os.environ["AVITO_PROXY_USERNAME"],
-                                  os.environ.get("AVITO_PROXY_PASSWORD", ""))
-        print("[1/2] мобильный прокси со сменой сессии на каждый запрос"
-              if rotator.rotatable else
-              "[1/2] прокси из переменных окружения (ротация недоступна: "
-              "в логине нет session-...)")
-        mine, servers = [], []
+
+    rotator = None
     ring = None
-    if rotator is not None:
-        pass
+    mine: list = []
+    servers: list = []
+
+    env_server = os.environ.get("AVITO_PROXY_SERVER", "").strip()
+    env_user = os.environ.get("AVITO_PROXY_USERNAME", "").strip()
+
+    if env_server and env_user and not args.direct:
+        rotator = RotatingSession(env_server, env_user,
+                                  os.environ.get("AVITO_PROXY_PASSWORD", ""))
+        if rotator.rotatable:
+            print("[1/2] прокси из переменных окружения, новая сессия (то есть "
+                  "новый IP) на каждый запрос")
+        else:
+            print("[1/2] прокси из переменных окружения; ротация недоступна — "
+                  "в логине нет session-...")
     elif args.direct:
-        # напрямую с этой машины: нужно, когда IP и так подходящий —
-        # мобильный прокси на роутере, телефон в режиме модема и т.п.
         print("[1/2] без прокси, напрямую с этой машины")
-        mine, servers = [], []
     else:
         mine = proxy_pool.load_my_proxies()
-    if not args.direct and mine:
-        print(f"[1/2] свои прокси из {proxy_pool.MY_PROXIES_FILE.name}: {len(mine)}")
-        if args.only_mine:
-            servers = mine
-            print("      публичные списки не трогаю (--only-mine)")
+        if mine:
+            print(f"[1/2] свои прокси из {proxy_pool.MY_PROXIES_FILE.name}: {len(mine)}")
+            if args.only_mine:
+                servers = list(mine)
+                print("      публичные списки не трогаю (--only-mine)")
+            else:
+                print("      добираю публичные списки следом")
+                servers = mine + proxy_pool.harvest()
         else:
-            print("      добираю публичные списки следом")
-            servers = mine + proxy_pool.harvest()
-    elif not args.direct:
-        print("[1/2] качаю списки прокси")
-        servers = proxy_pool.harvest()
-    if not servers and not args.direct:
-        sys.exit("Не удалось получить ни одного прокси.")
+            print("[1/2] качаю списки прокси")
+            servers = proxy_pool.harvest()
 
-    if not HAVE_SOCKS and servers:
-        socks_count = sum(1 for s in servers if s.startswith("socks"))
-        servers = [s for s in servers if not s.startswith("socks")]
-        print(f"      ВНИМАНИЕ: PySocks не установлен, поэтому {socks_count} "
-              f"SOCKS-адресов пропущены.\n"
-              f"      А это как раз самые полезные для нас: обычные HTTP-прокси\n"
-              f"      часто не умеют HTTPS, без которого Avito не открыть.\n"
-              f"      Поставьте:  pip install PySocks\n")
+        if not servers:
+            sys.exit("Не удалось получить ни одного прокси.")
 
-    if not args.direct:
-        ring = ProxyRing(servers, priority=mine if mine else None,
-                         cooldown=args.cooldown)
-        kinds = {}
+        if not HAVE_SOCKS:
+            socks_count = sum(1 for s in servers if s.startswith("socks"))
+            servers = [s for s in servers if not s.startswith("socks")]
+            print(f"      ВНИМАНИЕ: PySocks не установлен, поэтому {socks_count} "
+                  f"SOCKS-адресов пропущены.\n"
+                  f"      А это как раз самые полезные для нас: обычные HTTP-прокси\n"
+                  f"      часто не умеют HTTPS, без которого Avito не открыть.\n"
+                  f"      Поставьте:  pip install PySocks\n")
+
+        ring = ProxyRing(servers, priority=mine or None, cooldown=args.cooldown)
+        kinds: dict = {}
         for server in servers:
-            kind = server.split("://")[0]
-            kinds[kind] = kinds.get(kind, 0) + 1
+            kinds[server.split("://")[0]] = kinds.get(server.split("://")[0], 0) + 1
         breakdown = ", ".join(f"{kind} {count}" for kind, count in sorted(kinds.items()))
         print(f"      адресов в пуле: {ring.alive} ({breakdown})\n")
+
 
     print(f"[2/2] собираю {len(todo)} карточек в {args.workers} потоков "
           f"(готово ранее: {len(done)})\n")
