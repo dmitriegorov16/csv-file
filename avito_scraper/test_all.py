@@ -305,6 +305,22 @@ def test_dead_proxy_does_not_crash() -> None:
     check("json() не роняет разбор", response.json() == {})
 
 
+def test_broken_item_does_not_crash() -> None:
+    print("\nКривое объявление:")
+    from catalog_scrape import to_listing
+
+    # В выдаче попадаются объявления, где привычное поле приходит списком,
+    # строкой или null. Одно такое не должно ронять многочасовой прогон.
+    broken = {"urlPath": "/moskva/avtomobili/x_1234567890", "title": "Т",
+              "priceDetailed": [1, 2], "geo": None, "location": "Москва",
+              "category": [], "addressDetailed": "Москва", "images": "нет"}
+    row = to_listing(broken, 1)
+    check("разбор не падает", row.title == "Т")
+    check("цена пустая, а не мусор", row.price == "")
+    check("картинка пустая", row.image == "")
+    check("город взят из ссылки", row.city == "Москва", row.city)
+
+
 def test_bot_module() -> None:
     print("\nБот:")
     try:
@@ -336,6 +352,7 @@ def main() -> None:
     test_status_report()
     test_find_items()
     test_dead_proxy_does_not_crash()
+    test_broken_item_does_not_crash()
     test_bot_module()
 
     print(f"\n{'=' * 58}")

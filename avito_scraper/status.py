@@ -54,13 +54,19 @@ def snapshot(path: Path) -> dict:
     filled = {name: 0 for name in CSV_FIELDS}
     urls = set()
     rows = 0
-    with path.open(encoding="utf-8", newline="") as handle:
-        for row in csv.DictReader(handle):
-            rows += 1
-            urls.add(row.get("url", ""))
-            for name in CSV_FIELDS:
-                if (row.get(name) or "").strip():
-                    filled[name] += 1
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            for row in csv.DictReader(handle):
+                rows += 1
+                urls.add(row.get("url", ""))
+                for name in CSV_FIELDS:
+                    if (row.get(name) or "").strip():
+                        filled[name] += 1
+    except Exception:
+        # Файл читается прямо во время записи, и последняя строка может
+        # оказаться недописанной. Это не повод падать: считаем то, что
+        # успели прочитать.
+        pass
     return {"строк": rows, "полей": filled, "ссылок": len(urls)}
 
 

@@ -72,6 +72,16 @@ def best_image(item: dict) -> str:
     return max(first.items(), key=lambda pair: size_of(pair[0]))[1]
 
 
+def as_dict(value) -> dict:
+    """Вложенное поле, если оно и правда словарь.
+
+    В выдаче попадаются объявления, где привычное поле приходит списком
+    или null. Вызов .get на таком роняет разбор, а вместе с ним весь
+    многочасовой прогон — из-за одного кривого объявления из тридцати
+    тысяч."""
+    return value if isinstance(value, dict) else {}
+
+
 def to_listing(item: dict, item_id: int) -> Listing:
     """Объявление из каталога -> строка CSV."""
     # ?context=... — метка перехода, к самому объявлению отношения не
@@ -81,14 +91,14 @@ def to_listing(item: dict, item_id: int) -> Listing:
     content = str(item.get("description") or "").strip()
     description = (content[:100] + "…") if len(content) > 100 else content
 
-    price = (item.get("priceDetailed") or {}).get("value")
-    geo = item.get("geo") or {}
-    detailed = item.get("addressDetailed") or {}
+    price = as_dict(item.get("priceDetailed")).get("value")
+    geo = as_dict(item.get("geo"))
+    detailed = as_dict(item.get("addressDetailed"))
 
     # Город: location.name есть не у всех объявлений, поэтому спускаемся
     # по запасным источникам, а в самом конце берём из ссылки — там он
     # присутствует всегда, потому что задан структурой адреса Avito.
-    city = (str((item.get("location") or {}).get("name") or "")
+    city = (str(as_dict(item.get("location")).get("name") or "")
             or str(detailed.get("locationName") or "")
             or str(geo.get("addressLocality") or "")
             or city_from_url(url))
@@ -108,7 +118,7 @@ def to_listing(item: dict, item_id: int) -> Listing:
         description=description,
         image=best_image(item),
         price="" if price in (None, "") else str(price),
-        category=str((item.get("category") or {}).get("name") or ""),
+        category=str(as_dict(item.get("category")).get("name") or ""),
         city=city,
         address=address,
     )
@@ -315,7 +325,12 @@ def main() -> None:
                         if key in done:
                             continue
                         done.add(key)
-                        listing = to_listing(item, next_id)
+                        try:
+                            listing = to_listing(item, next_id)
+                        except Exception as exc:      # noqa: BLE001
+                            print(f"      объявление {key} не разобралось "
+                                  f"({type(exc).__name__}), пропускаю")
+                            continue
                         writer.writerow(listing.__dict__)
                         pending.append(listing)
                         progress.write(key + "\n")

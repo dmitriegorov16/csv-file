@@ -109,39 +109,47 @@ async def watch_chunks(bot: Bot) -> None:
         await asyncio.sleep(5)
         if not watching_chat:
             continue
+        try:
+            was_running = await check_once(bot, was_running)
+        except Exception as exc:                      # noqa: BLE001
+            # Этот цикл — единственное, что доставляет результат. Умрёт
+            # он молча, и сбор будет идти в пустоту.
+            print(f"наблюдение споткнулось: {type(exc).__name__}")
 
-        if CHUNKS.exists():
-            for path in sorted(CHUNKS.glob("*.csv")):
-                if path.name in sent_chunks:
-                    continue
-                sent_chunks.add(path.name)
-                try:
-                    rows = max(0, len(path.read_text(encoding="utf-8")
-                                      .splitlines()) - 1)
-                    await bot.send_document(
-                        watching_chat, FSInputFile(path),
-                        caption=f"{path.stem}: {rows} строк")
-                except Exception as exc:
-                    await bot.send_message(
-                        watching_chat,
-                        f"Порция {path.name} готова, но не отправилась "
-                        f"({type(exc).__name__}). Она на сервере: {path}")
 
-        running = collector_running()
-        if was_running and not running:
-            # сбор только что закончился — отдаём весь файл
+async def check_once(bot: Bot, was_running: bool) -> bool:
+    """Один обход папки. Возвращает, идёт ли сбор сейчас."""
+    if CHUNKS.exists():
+        for path in sorted(CHUNKS.glob("*.csv")):
+            if path.name in sent_chunks:
+                continue
+            sent_chunks.add(path.name)
             try:
-                await bot.send_message(watching_chat, "Сбор завершён.\n"
-                                       + status_text())
-                if CSV.exists():
-                    await bot.send_document(watching_chat, FSInputFile(CSV),
-                                            caption="Итоговый CSV")
+                rows = max(0, len(path.read_text(encoding="utf-8")
+                                  .splitlines()) - 1)
+                await bot.send_document(watching_chat, FSInputFile(path),
+                                        caption=f"{path.stem}: {rows} строк")
             except Exception as exc:
                 await bot.send_message(
                     watching_chat,
-                    f"Готово, но файл не отправился ({type(exc).__name__}). "
-                    f"Он на сервере: {CSV}")
-        was_running = running
+                    f"Порция {path.name} готова, но не отправилась "
+                    f"({type(exc).__name__}). Она на сервере: {path}")
+
+    running = collector_running()
+    if was_running and not running:
+        # сбор только что закончился — отдаём весь файл
+        try:
+            await bot.send_message(watching_chat,
+                                   "Сбор завершён.\n" + status_text())
+            if CSV.exists():
+                await bot.send_document(watching_chat, FSInputFile(CSV),
+                                        caption="Итоговый CSV")
+        except Exception as exc:
+            await bot.send_message(
+                watching_chat,
+                f"Готово, но файл не отправился ({type(exc).__name__}). "
+                f"Он на сервере: {CSV}")
+    return running
 
 
 def main() -> None:
