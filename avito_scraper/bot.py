@@ -121,10 +121,18 @@ def main() -> None:
     if not os.environ.get("RUCAPTCHA_API_KEY"):
         print("RUCAPTCHA_API_KEY не задан — капчу решать будет нечем\n")
 
-    me = notify._call("getMe", {})
-    username = me.get("result", {}).get("username", "?")
-    print(f"бот @{username} слушает. Цель: {args.limit}, порция: {args.chunk}")
-    print("Отправьте ему /start в Telegram.\n")
+    # Сначала сказать, что живы, и только потом идти в сеть: запрос к
+    # Telegram может тянуться, и всё это время лог оставался пустым —
+    # со стороны неотличимо от бота, который не запустился вовсе.
+    print(f"запускаюсь. Цель: {args.limit}, порция: {args.chunk}")
+
+    try:
+        me = notify._call("getMe", {})
+        username = me.get("result", {}).get("username", "?")
+        print(f"бот @{username} слушает. Отправьте ему /start в Telegram.")
+    except Exception as exc:
+        print(f"Telegram не ответил на getMe: {type(exc).__name__}. "
+              f"Проверьте сеть и токен — слушать всё равно попробую.")
 
     # Telegram хранит непрочитанные сообщения и отдаёт их при запуске.
     # Без этого бот, поднятый после нескольких неудачных попыток, отвечает
