@@ -202,7 +202,10 @@ def solve(session, page_url: str, page_html: str, timeout: int = 30,
     except Exception as exc:
         return False, f"/verify не ответил: {type(exc).__name__}"
 
-    if verdict.get("verified") is True:
+    # Ответ вложенный: {"success": {"result": {"verified": true}}}.
+    # Верхнеуровневый .get() всегда возвращал None, и пройденная капча
+    # выглядела как отказ.
+    if _find(verdict, "verified") is True:
         _note("решено")
         session.cookies.set("captcha_solved", "1", domain="www.avito.ru", path="/")
         return True, "капча пройдена"
