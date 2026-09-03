@@ -159,3 +159,20 @@ def test_auto_breadcrumbs_pick_section():
 
 
 test_auto_breadcrumbs_pick_section()
+
+
+def test_photo_without_extension():
+    """Фото Avito лежат на img.avito.st и расширения не имеют — рядом на
+    том же домене лежат логотипы, шрифты и промо-значки."""
+    photo = ("https://00.img.avito.st/image/1/"
+             "1.GznOpra1t9DUB2nT9L4IH9wGtdBwDRnQpAS10g.YJM9xgdi5wjSFs7hbrow")
+    page_html = (
+        '<meta property="og:image" content="https://m.avito.ru/icons/touch-icon-512x512.png">'
+        '<link href="https://www.avito.st/s/app/logo/180.png">'
+        '<img src="https://avito.st/static/ims/86fec5d0_expensive_common_120x120.png">'
+        f'<img src="{photo}">')
+    assert fs.pick_image(page_html, {}) == photo, fs.pick_image(page_html, {})
+    print("[9] фото без расширения находится, иконки и значки — нет — OK")
+
+
+test_photo_without_extension()

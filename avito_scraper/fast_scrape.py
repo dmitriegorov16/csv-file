@@ -119,13 +119,17 @@ TAG_RE = re.compile(r"<[^>]+>")
 # Картинки объявления лежат на своей CDN. Отдельным шаблоном они
 # отличаются от иконок сайта: og:image у мобильной версии — это
 # touch-icon, а не фотография товара.
-# Одного домена avito.st мало: там же лежат шрифты и статика, и первым
-# совпадением оказывался .woff2. Нужна именно фотография: путь /image/
-# или расширение картинки, и точно не из /assets/.
-PHOTO_RE = re.compile(
-    r'https://[\w.-]*avito\.st/[^"\'\s\\<>]*?'
-    r'(?:/image/[^"\'\s\\<>]+|[^"\'\s\\<>]+\.(?:jpe?g|png|webp))',
-    re.IGNORECASE)
+# Фотографии объявления лежат на поддомене img.avito.st и расширения не
+# имеют вовсе: https://00.img.avito.st/image/1/1.GznOpra1t9DUB2nT...
+# На том же avito.st лежат шрифты, логотипы и промо-значки, поэтому
+# одного домена мало — нужен либо этот поддомен, либо путь image/.
+PHOTO_RES = (
+    re.compile(r'https://[\w.-]*img\.avito\.st/[^"\'\s\\<>]+', re.IGNORECASE),
+    re.compile(r'https://[\w.-]*avito\.st/[^"\'\s\\<>]*image/[^"\'\s\\<>]+',
+               re.IGNORECASE),
+    re.compile(r'https://[\w.-]*avito\.(?:st|ru)/[^"\'\s\\<>]+'
+               r'\.(?:jpe?g|png|webp)', re.IGNORECASE),
+)
 JUNK_IMAGE_RE = re.compile(
     r"(icon|logo|placeholder|sprite|favicon|badge|/assets/|/fonts/|/static/"
     r"|\.svg|\.woff)",
@@ -249,10 +253,11 @@ def pick_image(page_html: str, json_ld: dict) -> str:
             return candidate
     # og: нет или там touch-icon — ищем ссылку на CDN фотографий прямо
     # в разметке: и в <img src>, и во встроенном JSON состояния.
-    for match in PHOTO_RE.finditer(page_html):
-        candidate = match.group(0).replace("\\/", "/")
-        if not JUNK_IMAGE_RE.search(candidate):
-            return candidate
+    for pattern in PHOTO_RES:
+        for match in pattern.finditer(page_html):
+            candidate = match.group(0).replace("\\/", "/")
+            if not JUNK_IMAGE_RE.search(candidate):
+                return candidate
     return ""
 
 
