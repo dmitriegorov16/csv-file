@@ -43,7 +43,8 @@ from typing import Optional
 import proxy_pool
 from scraper import (CSV_FIELDS, DATA_DIR, OUTPUT_CSV, URLS_FILE, Listing,
                      capitalize_city)
-from url_meta import category_from_url, city_from_url
+from url_meta import (category_from_crumbs, category_from_url,
+                      city_from_url)
 
 try:
     # brotli: без него нельзя обещать серверу Accept-Encoding: br —
@@ -125,7 +126,8 @@ PHOTO_RE = re.compile(
     r'(?:/image/[^"\'\s\\<>]+|[^"\'\s\\<>]+\.(?:jpe?g|png|webp))',
     re.IGNORECASE)
 JUNK_IMAGE_RE = re.compile(
-    r"(icon|logo|placeholder|sprite|favicon|/assets/|/fonts/|\.svg|\.woff)",
+    r"(icon|logo|placeholder|sprite|favicon|badge|/assets/|/fonts/|/static/"
+    r"|\.svg|\.woff)",
     re.IGNORECASE)
 
 # Общесайтовое описание, которое Avito ставит, когда своего у страницы нет.
@@ -203,8 +205,10 @@ def block_html(page_html: str, marker: str) -> str:
 
 LINK_TEXT_RE = re.compile(r"<a\b[^>]*>(.*?)</a>", re.DOTALL | re.IGNORECASE)
 
-# В крошках первым идёт сам сайт и регион — категорией они не являются.
-NOT_A_CATEGORY = {"авито", "главная", "все объявления", "объявления"}
+# В крошках первым идёт сам сайт — категорией он не является. Свёрнутые
+# крошки Avito рисует многоточием, и оно попадало в город как "…".
+NOT_A_CATEGORY = {"авито", "главная", "все объявления", "объявления",
+                  "…", "...", "·", "—", "-"}
 
 
 def breadcrumbs(page_html: str) -> list:
@@ -308,20 +312,21 @@ def parse_html(page_html: str, url: str, item_id: int) -> Listing:
         strip_tags(b) for b in
         re.findall(r'itemprop=["\']name["\'][^>]*>([^<]{1,80})<', page_html)]
     crumbs = [c for c in crumbs
-              if c and c != title and c.lower() not in NOT_A_CATEGORY]
-    # последняя крошка — это часто сама модель ("Kia"), а не раздел;
-    # берём последнюю, которая совпала с известным разделом, иначе просто
-    # последнюю: раздел всегда стоит правее региона
+              if len(c) > 1 and c != title and c.lower() not in NOT_A_CATEGORY]
+    # первая крошка после "Авито" — регион, дальше идут разделы
     if not city and len(crumbs) > 1:
         city = crumbs[0]
         crumbs = crumbs[1:]
-    category = crumbs[-1] if crumbs else ""
+    category = category_from_crumbs(crumbs)
     if not category and isinstance(json_ld.get("category"), str):
         category = json_ld["category"]
 
     # Разметка у мобильной версии беднее, и город с категорией в ней часто
     # отсутствуют. В ссылке они есть всегда — берём оттуда, но только как
     # запасной источник: то, что написано на странице, точнее.
+    # выбор региона в шапке показывает город объявления — единственное
+    # место, где он есть, когда крошки свёрнуты
+    city = city or capitalize_city(block_text(page_html, "search-form/change-location"))
     city = city or city_from_url(url)
     category = category or category_from_url(url)
 

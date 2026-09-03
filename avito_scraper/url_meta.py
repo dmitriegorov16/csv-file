@@ -197,3 +197,32 @@ def category_from_url(url: str) -> str:
         if slug not in GENERIC_SECTIONS:
             return detransliterate(slug)
     return CATEGORY_NAMES.get(parts[0], detransliterate(parts[0]))
+
+
+# Русские названия — для разбора хлебных крошек: там уже не slug, а текст.
+KNOWN_CATEGORY_NAMES = set(CATEGORY_NAMES.values())
+
+# Разделы-обёртки в крошках: "Транспорт" стоит перед "Автомобили" и
+# категорией объявления не является.
+GENERIC_SECTION_NAMES = {
+    "транспорт", "недвижимость", "работа", "услуги", "личные вещи",
+    "для дома и дачи", "бытовая электроника", "хобби и отдых",
+    "животные", "для бизнеса", "электроника",
+}
+
+
+def category_from_crumbs(crumbs: list) -> str:
+    """Категория из хлебных крошек.
+
+    Крошки у Avito идут от общего к частному:
+
+        Авито / Иркутск / Транспорт / Автомобили / Kia / Sportage / IV (2015—2018)
+
+    Последняя — поколение модели, а не раздел, поэтому "берём последнюю"
+    даёт мусор. Берём первую, которая совпала с известным разделом, а если
+    таких нет — первую после обёрток: раздел всегда левее модели."""
+    candidates = [c for c in crumbs if c.lower() not in GENERIC_SECTION_NAMES]
+    for crumb in candidates:
+        if crumb in KNOWN_CATEGORY_NAMES:
+            return crumb
+    return candidates[0] if candidates else ""

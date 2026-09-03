@@ -75,10 +75,12 @@ def main() -> None:
             print(f"  {count:>6}  {label}")
 
         # og:-теги целиком: их немного, а видно сразу, что страница отдала
-        for name, value in re.findall(
-                r'<meta[^>]+property=["\']og:([^"\']+)["\'][^>]+content=["\']([^"\']*)',
-                page_html, re.IGNORECASE)[:12]:
-            print(f"  og:{name:<12} {value[:70]}")
+        # порядок атрибутов не фиксирован: на мобильной странице content
+        # идёт раньше property, и односторонний шаблон не находил ничего
+        for name in ("title", "description", "image", "url", "type", "site_name"):
+            value = meta_content(page_html, "property", f"og:{name}")
+            if value:
+                print(f"  og:{name:<12} {value[:70]}")
 
         # маркеры, где может лежать адрес — самое неочевидное поле
         near_address = sorted({m for m in re.findall(r'data-marker="([^"]{3,60})"', page_html)
@@ -89,6 +91,20 @@ def main() -> None:
             for name in near_address:
                 text = " ".join(block_text(page_html, name).split())[:70]
                 print(f"    {name:<40} {text}")
+
+        # какие вообще ссылки на картинки есть в разметке: если фото
+        # объявления подгружается скриптом, в HTML его может не быть вовсе
+        images, seen = [], set()
+        for match in re.finditer(r'https://[\w.-]*avito\.(?:st|ru)/[^"\'\s\\<>]+',
+                                 page_html):
+            candidate = match.group(0).replace("\\/", "/")
+            if re.search(r"\.(jpe?g|png|webp)|/image/", candidate, re.IGNORECASE) \
+                    and candidate not in seen:
+                seen.add(candidate)
+                images.append(candidate)
+        print(f"\n  ссылок на картинки: {len(images)}, первые:")
+        for candidate in images[:8]:
+            print(f"    {candidate[:100]}")
 
         marker = re.findall(r'data-marker="([^"]{3,40})"', page_html)
         if marker:

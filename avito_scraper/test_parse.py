@@ -137,3 +137,25 @@ def test_no_city_from_stub_url():
 
 test_breadcrumbs_and_photo()
 test_no_city_from_stub_url()
+
+
+def test_auto_breadcrumbs_pick_section():
+    """Крошки авто: последняя — поколение модели, а не категория."""
+    crumbs = ["Иркутск", "Транспорт", "Автомобили", "Kia", "Sportage", "IV (2015—2018)"]
+    from url_meta import category_from_crumbs
+    assert category_from_crumbs(crumbs[1:]) == "Автомобили", category_from_crumbs(crumbs[1:])
+    page_html = (
+        '<div data-marker="breadcrumbs">'
+        '<a href="/">Авито</a><a href="/x">…</a>'
+        '<a href="/irkutsk/transport">Транспорт</a>'
+        '<a href="/irkutsk/avtomobili">Автомобили</a>'
+        '<a href="/irkutsk/avtomobili/kia">Kia</a>'
+        '<a href="/irkutsk/avtomobili/kia/iv">IV (2015—2018)</a></div>'
+        '<div data-marker="search-form/change-location">Иркутск</div>')
+    listing = fs.parse_html(page_html, "https://www.avito.ru/x_1", 9)
+    assert listing.category == "Автомобили", listing.category
+    assert listing.city == "Иркутск", listing.city
+    print("[8] поколение модели не подменяет категорию, «…» не подменяет город — OK")
+
+
+test_auto_breadcrumbs_pick_section()
