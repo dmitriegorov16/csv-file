@@ -21,12 +21,15 @@ import gzip
 import re
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 IPHONE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
              "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
              "Mobile/15E148 Safari/604.1")
 
-BUNDLE = "https://www.avito.st/s/desktop/item.58c395bb32b9b19a.js"
+# Путь к бандлу угадывать нельзя: в имени хеш сборки, и он меняется с
+# каждым релизом. Берём ссылки из сохранённой страницы — там они точные.
+SCRIPT_RE = re.compile(r'src=["\'](https://[^"\']+\.js)["\']', re.IGNORECASE)
 
 CANDIDATES = [
     "/web/1/js/items/{id}",
@@ -76,22 +79,41 @@ def probe(item_id: str) -> None:
         print(f"  {path:<45} {status:>3}  {classify(status, body)}")
 
 
-def show(fragment: str, bundle: str) -> None:
-    """Куски JS вокруг адреса — там видно параметры вызова."""
+def download(url: str, timeout: int = 120) -> str:
     request = urllib.request.Request(
-        bundle, headers={"User-Agent": IPHONE_UA, "Accept-Encoding": "gzip"})
-    with urllib.request.urlopen(request, timeout=90) as response:
+        url, headers={"User-Agent": IPHONE_UA, "Accept-Encoding": "gzip"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         raw = response.read()
         if response.headers.get("Content-Encoding") == "gzip":
             raw = gzip.decompress(raw)
-    body = raw.decode("utf-8", "replace")
-    print(f"бандл {len(body) // 1024} КБ, ищу «{fragment}»\n")
-    for number, match in enumerate(re.finditer(re.escape(fragment), body), 1):
-        start = max(0, match.start() - 400)
-        piece = body[start:match.end() + 500]
-        print(f"--- вхождение {number}\n{piece}\n")
-        if number >= 4:
-            break
+    return raw.decode("utf-8", "replace")
+
+
+def show(fragment: str, page_path: str, per_file: int = 3) -> None:
+    """Куски JS вокруг адреса — там видно метод и параметры вызова."""
+    page = Path(page_path).read_text(encoding="utf-8", errors="replace")
+    scripts = list(dict.fromkeys(SCRIPT_RE.findall(page)))
+    if not scripts:
+        raise SystemExit(f"В {page_path} нет ссылок на JS")
+
+    print(f"скриптов: {len(scripts)}, ищу «{fragment}»\n")
+    total = 0
+    for url in scripts:
+        name = url.rsplit("/", 1)[-1]
+        try:
+            body = download(url)
+        except Exception as exc:
+            continue
+        matches = list(re.finditer(re.escape(fragment), body))
+        if not matches:
+            continue
+        print(f"=== {name}: {len(matches)} вхождений")
+        for number, match in enumerate(matches[:per_file], 1):
+            start = max(0, match.start() - 400)
+            print(f"--- {number}\n{body[start:match.end() + 500]}\n")
+        total += len(matches)
+    if not total:
+        print("нигде не встретилось")
 
 
 def main() -> None:
@@ -99,11 +121,12 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--id", default="8245305594")
     parser.add_argument("--show", default="", help="показать куски JS вокруг строки")
-    parser.add_argument("--bundle", default=BUNDLE)
+    parser.add_argument("--page", default="data/empty_200.html",
+                        help="сохранённая страница — из неё берутся ссылки на JS")
     args = parser.parse_args()
 
     if args.show:
-        show(args.show, args.bundle)
+        show(args.show, args.page)
         return
     print("проверяю найденные маршруты:\n")
     probe(args.id)
