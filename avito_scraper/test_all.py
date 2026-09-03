@@ -444,6 +444,37 @@ def test_log_forwarding() -> None:
     check("падение попало", any("Traceback" in line for line in worth))
 
 
+def test_flatten() -> None:
+    print("\nФайл для просмотрщиков:")
+    import subprocess
+    from flatten import flatten as squash
+    from scraper import CSV_FIELDS
+
+    check("переносы становятся пробелами",
+          squash("Первая\nВторая") == "Первая Вторая")
+    check("пустые строки не оставляют дыр",
+          squash("А\n\n\nБ") == "А Б")
+    check("табуляции тоже", squash("А\tБ") == "А Б")
+    check("пустое поле остаётся пустым", squash(None) == "")
+
+    folder = Path(tempfile.mkdtemp())
+    source = folder / "src.csv"
+    with source.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
+        writer.writeheader()
+        writer.writerow({**{name: "" for name in CSV_FIELDS}, "id": "1",
+                         "url": "https://www.avito.ru/a_1", "title": "Кухня",
+                         "content": "Первая\nВторая\n\nЧетвёртая"})
+    out = folder / "flat.csv"
+    subprocess.run([sys.executable, "flatten.py", "--src", str(source),
+                    "--out", str(out)], capture_output=True, text=True)
+    lines = out.read_text(encoding="utf-8").strip().splitlines()
+    # одна запись — одна строка файла, иначе просмотрщики обрывают таблицу
+    check("запись занимает одну строку файла", len(lines) == 2, str(len(lines)))
+    check("текст не потерялся",
+          "Первая Вторая Четвёртая" in out.read_text(encoding="utf-8"))
+
+
 def test_bot_module() -> None:
     print("\nБот:")
     try:
@@ -479,6 +510,7 @@ def main() -> None:
     test_dead_proxy_does_not_crash()
     test_broken_item_does_not_crash()
     test_log_forwarding()
+    test_flatten()
     test_bot_module()
 
     print(f"\n{'=' * 58}")
