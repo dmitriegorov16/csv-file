@@ -609,6 +609,10 @@ def main() -> None:
     ring = None
     mine: list = []
     servers: list = []
+    # докачивать публичные списки на ходу можно только если пул из них и
+    # состоит: подмешать их к выданным провайдером мобильным адресам —
+    # значит утопить хороший пул в мусоре
+    from_public_lists = False
 
     if args.impersonate and not HAVE_CFFI:
         sys.exit("Для --impersonate нужен curl_cffi:  pip install curl_cffi")
@@ -641,6 +645,7 @@ def main() -> None:
         print(f"      получено адресов: {len(servers)}")
         ring = ProxyRing(servers, priority=None, cooldown=args.cooldown,
                          strikes=args.strikes)
+        from_public_lists = False
     elif env_server and env_user and not args.direct:
         rotator = RotatingSession(env_server, env_user,
                                   os.environ.get("AVITO_PROXY_PASSWORD", ""))
@@ -678,6 +683,7 @@ def main() -> None:
                   f"      часто не умеют HTTPS, без которого Avito не открыть.\n"
                   f"      Поставьте:  pip install PySocks\n")
 
+        from_public_lists = not (mine and args.only_mine)
         ring = ProxyRing(servers, priority=mine or None, cooldown=args.cooldown,
                          strikes=args.strikes)
         kinds: dict = {}
@@ -795,10 +801,20 @@ def main() -> None:
 
                 # пул истощился — докачиваем свежие списки на ходу
                 if ring is not None and ring.alive < args.workers:
-                    fresh = proxy_pool.harvest()
-                    added = ring.refill(fresh)
-                    print(f"      [пул] добавлено свежих адресов: {added} "
-                          f"(живых {ring.alive})")
+                    # пул истощился: у провайдера перезапрашиваем его же
+                    # список (он отдаёт свежую выборку), публичные списки
+                    # трогаем только если пул изначально из них
+                    try:
+                        fresh = (proxy_pool.load_from_url(list_url) if list_url
+                                 else proxy_pool.harvest() if from_public_lists
+                                 else [])
+                    except Exception as exc:
+                        print(f"      [пул] обновить не вышло: {type(exc).__name__}")
+                        fresh = []
+                    if fresh:
+                        added = ring.refill(fresh)
+                        print(f"      [пул] добавлено свежих адресов: {added} "
+                              f"(живых {ring.alive})")
     except KeyboardInterrupt:
         print("\nостановлено")
     finally:
