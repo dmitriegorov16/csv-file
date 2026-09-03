@@ -456,6 +456,20 @@ class ProxyRing:
                     self.failures.pop(server, None)
                     break
 
+    def kill(self, server: str) -> None:
+        """Выкинуть адрес сразу, не копя штрафы.
+
+        Ответ 439 — не сбой связи и не невезение, а приговор: Avito уже
+        держит этот IP в чёрном списке, и следующие попытки через него
+        ничего не изменят. Штрафовать его "до двух раз" значит тратить
+        запросы на заведомо мёртвое."""
+        with self.lock:
+            for pool in (self.priority, self.servers):
+                if server in pool:
+                    pool.remove(server)
+                    self.failures.pop(server, None)
+                    break
+
     def reward(self, server: str) -> None:
         with self.lock:
             self.failures.pop(server, None)
@@ -617,6 +631,31 @@ def _count_bytes(size: int) -> None:
         bytes_downloaded += size
 
 
+SAVED_BLOCKS = set()
+SAVED_BLOCKS_LOCK = threading.Lock()
+
+
+def save_block_page(status: int, body: str) -> None:
+    """Сохранить тело страницы блокировки — по одной на каждый код.
+
+    429 — это не отказ, а капча: страница с виджетом, который мы уже
+    умеем решать через браузер. Чтобы повторить тот же обмен голым HTTP,
+    нужна сама страница, а достаётся она редко: за 28 запросов один раз.
+    Упустить её значит ждать следующую."""
+    with SAVED_BLOCKS_LOCK:
+        if status in SAVED_BLOCKS or not body:
+            return
+        SAVED_BLOCKS.add(status)
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        path = DATA_DIR / f"firewall_{status}.html"
+        path.write_text(body, encoding="utf-8")
+        print(f"      [!] страница {status} сохранена в {path.name} "
+              f"({len(body)} символов)")
+    except Exception:
+        pass
+
+
 def fetch(server: Optional[str], url: str, timeout: int, head_bytes: int = 0,
           impersonate: str = "", mobile: bool = False):
     """Возвращает (html, '') либо ('', причина).
@@ -641,15 +680,16 @@ def fetch(server: Optional[str], url: str, timeout: int, head_bytes: int = 0,
                 url, headers={"Range": f"bytes=0-{head_bytes - 1}"} if head_bytes else None,
                 proxies=_proxy_dict(server) if server else None,
                 impersonate=impersonate, timeout=timeout)
-            if response.status_code not in (200, 206):
-                return "", f"HTTP {response.status_code}"
             _count_bytes(len(response.content))
+            if response.status_code not in (200, 206):
+                save_block_page(response.status_code, response.text)
+                return "", f"HTTP {response.status_code}"
             body = response.text
         except Exception as exc:
             return "", type(exc).__name__
         if any(marker in body for marker in FIREWALL_MARKERS):
             return "", "фаервол"
-        if "og:title" not in body:
+        if len(body) < 20000 and "item-view" not in body:
             return "", "без данных"
         return body, ""
 
@@ -662,10 +702,11 @@ def fetch(server: Optional[str], url: str, timeout: int, head_bytes: int = 0,
         if HAVE_REQUESTS:
             response = requests.get(url, headers=headers, proxies=proxies,
                                     timeout=timeout, allow_redirects=True)
+            _count_bytes(len(response.content))
             # 206 — сервер отдал запрошенный кусок, 200 — прислал всё целиком
             if response.status_code not in (200, 206):
+                save_block_page(response.status_code, response.text)
                 return "", f"HTTP {response.status_code}"
-            _count_bytes(len(response.content))
             body = response.text
         else:
             handlers = [urllib.request.ProxyHandler(proxies)] if proxies else []
@@ -919,7 +960,14 @@ def main() -> None:
                 continue       # просто берём следующий IP
             if ring is None:
                 break          # свой IP менять не на что
-            ring.punish(server)
+            # Триаж по ответу. 439 — адрес в чёрном списке Avito, второй
+            # и третий заход через него ничего не дадут, кроме потери
+            # времени. Всё остальное (таймаут, разрыв, 429) может быть
+            # случайностью, поэтому штрафуем как раньше.
+            if error == "HTTP 439":
+                ring.kill(server)
+            else:
+                ring.punish(server)
         else:
             results.put((url, None, "не вышло ни через один прокси"))
 
