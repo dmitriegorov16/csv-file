@@ -34,9 +34,26 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin, urlparse
 
-from playwright.sync_api import sync_playwright, Page, TimeoutError as PWTimeoutError
+try:
+    # Браузер нужен только веткам с Playwright. Разбор HTML и sitemap
+    # работают без него, и fast_scrape импортирует отсюда общие вещи —
+    # незачем требовать установленный браузер ради Listing и CSV_FIELDS.
+    from playwright.sync_api import sync_playwright, Page, TimeoutError as PWTimeoutError
+    HAVE_PLAYWRIGHT = True
+except ImportError:  # pragma: no cover - зависит от окружения
+    HAVE_PLAYWRIGHT = False
+    Page = object
 
-import captcha_solver
+    class PWTimeoutError(Exception):
+        pass
+
+    def sync_playwright(*_args, **_kwargs):
+        raise SystemExit("Нужен Playwright: pip install playwright")
+
+try:
+    import captcha_solver
+except ImportError:  # pragma: no cover
+    captcha_solver = None
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -453,7 +470,7 @@ def try_unblock(page: Page, delay: tuple[float, float]) -> bool:
               f"firewall_form={page.query_selector('.js-firewall-form') is not None}")
     except Exception:
         pass
-    if captcha_solver.solve_if_present(page):
+    if captcha_solver is not None and captcha_solver.solve_if_present(page):
         # после успешной проверки Avito может ещё редиректить/дохлопывать
         # SPA-навигацию — дадим странице осесть, иначе следующий же
         # eval_on_selector_all падает с "Execution context was destroyed"

@@ -43,6 +43,7 @@ from typing import Optional
 import proxy_pool
 from scraper import (CSV_FIELDS, DATA_DIR, OUTPUT_CSV, URLS_FILE, Listing,
                      capitalize_city)
+from url_meta import category_from_url, city_from_url
 
 try:
     # brotli: без него нельзя обещать серверу Accept-Encoding: br —
@@ -112,6 +113,21 @@ JSON_LD_RE = re.compile(
     r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
     re.DOTALL | re.IGNORECASE)
 TAG_RE = re.compile(r"<[^>]+>")
+
+# Картинки объявления лежат на своей CDN. Отдельным шаблоном они
+# отличаются от иконок сайта: og:image у мобильной версии — это
+# touch-icon, а не фотография товара.
+PHOTO_RE = re.compile(r'https://[\w.-]*avito\.st/[^"\'\s\\<>]+')
+JUNK_IMAGE_RE = re.compile(r"(icon|logo|placeholder|sprite|favicon|\.svg$)",
+                           re.IGNORECASE)
+
+# Общесайтовое описание, которое Avito ставит, когда своего у страницы нет.
+# Записать его в поле description значило бы получить 30000 одинаковых строк.
+BOILERPLATE_DESCRIPTIONS = (
+    "объявления на сайте авито",
+    "объявления о продаже",
+    "avito.ru",
+)
 
 
 # --------------------------------------------------------------------------
@@ -183,6 +199,38 @@ def extract_json_ld(page_html: str) -> dict:
     return {}
 
 
+def pick_image(page_html: str, json_ld: dict) -> str:
+    """Фотография объявления, а не иконка сайта."""
+    candidates = [meta_content(page_html, "property", "og:image")]
+    ld_image = json_ld.get("image")
+    if isinstance(ld_image, str):
+        candidates.append(ld_image)
+    elif isinstance(ld_image, list):
+        candidates.extend(i for i in ld_image if isinstance(i, str))
+    for candidate in candidates:
+        if candidate and not JUNK_IMAGE_RE.search(candidate):
+            return candidate
+    # og: нет или там touch-icon — ищем ссылку на CDN фотографий прямо
+    # в разметке: и в <img src>, и во встроенном JSON состояния.
+    for match in PHOTO_RE.finditer(page_html):
+        candidate = match.group(0).replace("\\/", "/")
+        if not JUNK_IMAGE_RE.search(candidate):
+            return candidate
+    return ""
+
+
+def pick_description(page_html: str, content: str) -> str:
+    """meta description, если она про это объявление, иначе обрезка текста."""
+    meta_description = meta_content(page_html, "name", "description")
+    lowered = meta_description.lower()
+    generic = any(marker in lowered for marker in BOILERPLATE_DESCRIPTIONS)
+    if meta_description and not generic and len(meta_description) > 30:
+        return meta_description
+    if content:
+        return (content[:100] + "…") if len(content) > 100 else content
+    return meta_description
+
+
 def parse_html(page_html: str, url: str, item_id: int) -> Listing:
     json_ld = extract_json_ld(page_html)
     offers = json_ld.get("offers") if isinstance(json_ld.get("offers"), dict) else {}
@@ -195,23 +243,23 @@ def parse_html(page_html: str, url: str, item_id: int) -> Listing:
     content = (block_text(page_html, "item-view/item-description")
                or json_ld.get("description", ""))
 
-    meta_description = meta_content(page_html, "name", "description")
-    if meta_description:
-        description = meta_description
-    elif content:
-        description = (content[:100] + "…") if len(content) > 100 else content
-    else:
-        description = ""
-
-    image = (meta_content(page_html, "property", "og:image")
-             or (json_ld.get("image") if isinstance(json_ld.get("image"), str) else ""))
+    description = pick_description(page_html, content)
+    image = pick_image(page_html, json_ld)
 
     price = (str(offers.get("price", ""))
              or meta_content(page_html, "itemprop", "price")
              or block_text(page_html, "item-view/item-price"))
     price = re.sub(r"[^\d]", "", price)
 
-    address = block_text(page_html, "item-view/item-address")
+    address = (block_text(page_html, "item-view/item-address")
+               or block_text(page_html, "delivery/location")
+               or block_text(page_html, "item-address"))
+    if not address:
+        address_ld = json_ld.get("address")
+        if isinstance(address_ld, str):
+            address = address_ld
+        elif isinstance(address_ld, dict):
+            address = address_ld.get("streetAddress", "") or ""
 
     city = ""
     address_data = offers.get("availableAtOrFrom") or json_ld.get("address")
@@ -230,6 +278,12 @@ def parse_html(page_html: str, url: str, item_id: int) -> Listing:
     category = crumbs[-1] if crumbs else ""
     if not category and isinstance(json_ld.get("category"), str):
         category = json_ld["category"]
+
+    # Разметка у мобильной версии беднее, и город с категорией в ней часто
+    # отсутствуют. В ссылке они есть всегда — берём оттуда, но только как
+    # запасной источник: то, что написано на странице, точнее.
+    city = city or city_from_url(url)
+    category = category or category_from_url(url)
 
     return Listing(
         id=item_id, url=url, title=title.strip(), content=content.strip(),

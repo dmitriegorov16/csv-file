@@ -74,3 +74,30 @@ assert 'Третий, вложенный' in r4.content, r4.content
 assert r4.address == 'Волгоград, ул. Мира, 5', repr(r4.address)
 assert r4.city == 'Волгоград', repr(r4.city)
 print('[4] многоабзацное описание целиком + город из адреса — OK')
+
+
+def test_mobile_variant():
+    """Страница без og:-тегов: так выглядит мобильная выдача Avito.
+
+    Здесь ломались сразу пять полей: description брало общесайтовое
+    "Авито — Объявления на сайте Авито", image — иконку сайта, а
+    category/city/address оставались пустыми."""
+    page_html = (
+        '<html><head>'
+        '<meta name="description" content="Авито — Объявления на сайте Авито">'
+        '<meta property="og:image" content="https://m.avito.ru/icons/touch-icon-512x512.png">'
+        '</head><body>'
+        '<div data-marker="item-view/item-description"><p>' + "Оп" * 80 + '</p></div>'
+        '<img src="https://20.img.avito.st/image/1/photo.jpg">'
+        '</body></html>')
+    url = "https://www.avito.ru/volgograd/avtomobili/kia_sportage_2018_8329727762"
+    listing = fs.parse_html(page_html, url, 7)
+    assert listing.description.endswith("…"), listing.description
+    assert "Авито — Объявления" not in listing.description
+    assert listing.image == "https://20.img.avito.st/image/1/photo.jpg", listing.image
+    assert listing.city == "Волгоград", listing.city
+    assert listing.category == "Автомобили", listing.category
+    print("[5] мобильный вариант страницы: описание, фото, город, категория — OK")
+
+
+test_mobile_variant()
