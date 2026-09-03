@@ -33,6 +33,9 @@ LINK_RE = re.compile(r'["\'](https://www\.avito\.st/[^"\']+\.js)["\']')
 # которые склеиваются в рантайме, поэтому ищем и то, и другое.
 ROUTE_RE = re.compile(r'/(?:web|js|api)/\d+(?:/[a-zA-Z0-9_.-]{2,40}){1,4}')
 PARTIAL_RE = re.compile(r'["\'](/(?:web|js|api)/[a-zA-Z0-9_./-]{4,60})["\']')
+# Путь может быть склеен из кусков и лежать без ведущего слэша:
+# "web/1/" + version + "/items". Ищем и такое.
+LOOSE_RE = re.compile(r'\b(?:web|api)/\d+/[a-zA-Z0-9_./-]{3,50}')
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                          "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -53,7 +56,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("page", nargs="?", default="data/empty_200.html")
-    parser.add_argument("--max", type=int, default=8,
+    parser.add_argument("--max", type=int, default=40,
                         help="сколько бандлов скачать")
     args = parser.parse_args()
 
@@ -77,11 +80,15 @@ def main() -> None:
             print(f"  [{number}] {name[:50]}: {type(exc).__name__}")
             continue
         total_bytes += len(body)
-        found = set(ROUTE_RE.findall(body)) | set(PARTIAL_RE.findall(body))
+        found = (set(ROUTE_RE.findall(body)) | set(PARTIAL_RE.findall(body))
+                 | {"/" + r for r in LOOSE_RE.findall(body)})
+        # сколько раз вообще встречается "web/" — так видно, пусто ли в
+        # файле или это регулярка не ловит
+        mentions = len(re.findall(r"web/\d", body))
         for route in found:
             routes.setdefault(route, set()).add(name)
-        print(f"  [{number}] {name[:50]}: {len(body) // 1024} КБ, "
-              f"маршрутов {len(found)}")
+        print(f"  [{number}] {name[:46]}: {len(body) // 1024:>5} КБ, "
+              f"маршрутов {len(found)}, упоминаний web/N: {mentions}")
 
     print(f"\nвсего скачано {total_bytes // 1024} КБ, "
           f"разных маршрутов {len(routes)}\n")
