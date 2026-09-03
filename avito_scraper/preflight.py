@@ -183,6 +183,75 @@ def check_live(proxy: str, proxy_list_url: str) -> None:
                        f"проверьте, хватает ли пакета")
 
 
+def soak(count: int, proxy: str, proxy_list_url: str) -> None:
+    """Серия запросов подряд: выдержит ли адрес длинный прогон.
+
+    Один удачный запрос ничего не обещает. Датацентровый IP пускает
+    первые обращения, а через сотню уходит в жёсткий режим, где капчу
+    даже не предлагают, — и узнать об этом лучше сейчас, а не на третьем
+    часу сбора. Здесь же видно, восстанавливается ли доступ сам: если
+    фаервол закрылся, а следующая проверка снова прошла, значит долгий
+    прогон переживёт такие закрытия."""
+    from catalog_scrape import BASE, LOCATIONS
+    from unlock import ensure_access, find_items, open_session
+
+    print(f"\n6. Нагрузка: {count} запросов подряд")
+    session, _ = open_session(proxy, proxy_list_url, verbose=False)
+    if session is None:
+        fail("нагрузка", "доступ не открылся")
+        return
+
+    good = blocked = empty = 0
+    recovered = 0
+    was_blocked = False
+    total_bytes = 0
+    sections = [9, 24, 84, 92, 27]        # авто, квартиры, телефоны, аквариум, одежда
+
+    for number in range(1, count + 1):
+        location = LOCATIONS[number % len(LOCATIONS)][0]
+        section = sections[number % len(sections)]
+        url = (f"{BASE}/web/1/js/items?categoryId={section}"
+               f"&locationId={location}&page={number % 20 + 1}"
+               f"&limit=50&display=list")
+        response = ensure_access(session, url, verbose=False)
+        if response.status_code != 200:
+            blocked += 1
+            was_blocked = True
+            print(f"   [{number:>3}] отказ {response.status_code}")
+            continue
+        total_bytes += len(response.content)
+        items = find_items(response.json())
+        if items:
+            good += 1
+            if was_blocked:
+                recovered += 1
+                was_blocked = False
+        else:
+            empty += 1
+        if number % 10 == 0:
+            print(f"   [{number:>3}] удачно {good}, отказов {blocked}, "
+                  f"пусто {empty}")
+
+    share = good / count * 100
+    print(f"\n   итог: {good}/{count} удачных ({share:.0f}%), "
+          f"отказов {blocked}, пустых {empty}")
+    if recovered:
+        ok("восстановление", f"после отказа доступ возвращался {recovered} раз(а)")
+    if total_bytes and good:
+        per_page = total_bytes / good / 1024
+        print(f"   {per_page:.0f} КБ на страницу, "
+              f"~{per_page * 600 / 1024 / 1024:.2f} ГБ на 30000")
+
+    if share >= 90:
+        ok("нагрузка", f"{share:.0f}% запросов прошли — адрес держит")
+    elif share >= 50:
+        warn("нагрузка", f"прошло лишь {share:.0f}% — прогон будет рваным, "
+                         f"но с восстановлением дойдёт")
+    else:
+        fail("нагрузка", f"прошло лишь {share:.0f}% — этот адрес долгий "
+                         f"прогон не выдержит")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -190,6 +259,9 @@ def main() -> None:
     parser.add_argument("--proxy-list-url", default="")
     parser.add_argument("--offline", action="store_true",
                         help="без обращений к Avito")
+    parser.add_argument("--soak", type=int, default=0,
+                        help="сделать столько запросов подряд и посмотреть, "
+                             "выдержит ли адрес (30 — разумно)")
     args = parser.parse_args()
 
     print("Проверка перед прогоном")
@@ -199,6 +271,8 @@ def main() -> None:
     check_progress()
     if not args.offline:
         check_live(args.proxy, args.proxy_list_url)
+        if args.soak:
+            soak(args.soak, args.proxy, args.proxy_list_url)
 
     print("\n" + "=" * 58)
     if problems:
