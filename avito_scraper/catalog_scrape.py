@@ -99,8 +99,28 @@ def to_listing(item: dict, item_id: int) -> Listing:
     )
 
 
+CATEGORIES_FILE = DATA_DIR / "categories.json"
+
+
 def categories(session, verbose: bool = True) -> list:
-    """Разделы из справочника Avito, а не из головы."""
+    """Разделы для обхода.
+
+    Сначала — проверенный список от find_categories.py: там номера, на
+    которые поиск действительно отвечает объявлениями. Справочник
+    /category/tree на эту роль не годится, хотя и выглядит подходящим: у
+    него своя нумерация, и 600 запросов по его идентификаторам вернули
+    ровно ноль объявлений."""
+    if CATEGORIES_FILE.exists():
+        try:
+            saved = json.loads(CATEGORIES_FILE.read_text(encoding="utf-8"))
+            pairs = [(int(row["id"]), row["name"]) for row in saved if row.get("id")]
+            if pairs:
+                if verbose:
+                    print(f"разделов из {CATEGORIES_FILE.name}: {len(pairs)}")
+                return pairs
+        except Exception:
+            pass
+
     response = ensure_access(session, CATEGORY_TREE, verbose=verbose)
     if response.status_code != 200:
         if verbose:
@@ -250,8 +270,12 @@ def main() -> None:
                     handle.flush()
                     progress.flush()
 
+                    # сколько пришло и сколько записалось — разные числа:
+                    # ноль пришедших значит негодный раздел, ноль
+                    # записанных при непустом ответе — что всё это уже есть
                     print(f"  {city}/{section}: страница {page} -> "
-                          f"+{fresh} (всего {written + len(done) - fresh})")
+                          f"пришло {len(items)}, новых {fresh} "
+                          f"(всего {written + len(done) - fresh})")
 
                     # Порция уходит файлом по мере накопления: так видно,
                     # что собирается именно нужное, уже на пятидесятой
