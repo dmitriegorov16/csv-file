@@ -41,6 +41,7 @@ from dataclasses import asdict
 from typing import Optional
 
 import firewall
+import firewall_pow
 import proxy_pool
 from scraper import (CSV_FIELDS, DATA_DIR, OUTPUT_CSV, URLS_FILE, Listing,
                      capitalize_city)
@@ -732,6 +733,23 @@ def fetch(server: Optional[str], url: str, timeout: int, head_bytes: int = 0,
             # 429 — не отказ, а капча: IP до Avito дошёл, ему показали
             # виджет. Решаем прямо здесь, в этой же сессии и через тот же
             # прокси, и повторяем запрос с полученной кукой.
+            # 439 с браузерными заголовками — это HTML-заглушка, в
+            # которой не видно, что делать. Тот же адрес с Accept:
+            # application/json отдаёт задачу proof-of-work, а она
+            # решается процессором и бесплатно, в отличие от капчи.
+            if response.status_code in (403, 439):
+                probe = session.get(url, headers={**headers,
+                                                  **firewall_pow.JSON_ACCEPT},
+                                    timeout=timeout)
+                _count_bytes(len(probe.content))
+                if "pow_challenge" in probe.text:
+                    solved, note_text = firewall_pow.solve(session, url, probe.text)
+                    print(f"      [pow] {note_text}")
+                    if solved:
+                        response = session.get(url, headers=headers,
+                                               timeout=timeout,
+                                               allow_redirects=True)
+                        _count_bytes(len(response.content))
             if response.status_code == 429 and firewall.available():
                 solved, note_text = firewall.solve(session, url, response.text,
                                                    timeout)
@@ -1111,6 +1129,10 @@ def main() -> None:
                   f"на 30000 нужно ~{total_gb:.2f} ГБ")
         else:
             print()
+
+    pow_line = firewall_pow.report()
+    if pow_line:
+        print(pow_line)
 
     captcha_line = firewall.report()
     if captcha_line:
