@@ -43,7 +43,8 @@ from typing import Optional
 import proxy_pool
 from scraper import (CSV_FIELDS, DATA_DIR, OUTPUT_CSV, URLS_FILE, Listing,
                      capitalize_city)
-from url_meta import (category_from_crumbs, category_from_url,
+from url_meta import (GENERIC_SECTION_NAMES, KNOWN_CATEGORY_NAMES,
+                      category_from_crumbs, category_from_url,
                       city_from_url)
 
 try:
@@ -313,9 +314,12 @@ def parse_html(page_html: str, url: str, item_id: int) -> Listing:
         re.findall(r'itemprop=["\']name["\'][^>]*>([^<]{1,80})<', page_html)]
     crumbs = [c for c in crumbs
               if len(c) > 1 and c != title and c.lower() not in NOT_A_CATEGORY]
-    # первая крошка после "Авито" — регион, дальше идут разделы
-    if not city and len(crumbs) > 1:
-        city = crumbs[0]
+    # Первая крошка после "Авито" — обычно регион. Но когда Avito
+    # сворачивает крошки, региона в них нет, и первой идёт уже раздел:
+    # без проверки в город попадал "Транспорт".
+    if len(crumbs) > 1 and crumbs[0] not in KNOWN_CATEGORY_NAMES \
+            and crumbs[0].lower() not in GENERIC_SECTION_NAMES:
+        city = city or crumbs[0]
         crumbs = crumbs[1:]
     category = category_from_crumbs(crumbs)
     if not category and isinstance(json_ld.get("category"), str):
