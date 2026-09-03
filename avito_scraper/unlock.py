@@ -123,7 +123,7 @@ def get(session, url: str, headers: dict, timeout: int):
         return NoAnswer(type(exc).__name__)
 
 
-def ensure_access(session, url: str, rounds: int = 4, verbose: bool = True,
+def ensure_access(session, url: str, rounds: int = 6, verbose: bool = True,
                   timeout: int = 30):
     """Добиться ответа с данными, проходя проверки по мере их появления.
 
@@ -136,6 +136,7 @@ def ensure_access(session, url: str, rounds: int = 4, verbose: bool = True,
             print(f"   сеть молчит: {response.reason}")
         return response
 
+    failures = 0
     for step in range(1, rounds + 1):
         if response.status_code == 200:
             return response
@@ -156,7 +157,17 @@ def ensure_access(session, url: str, rounds: int = 4, verbose: bool = True,
         if verbose:
             print(f"   [{step}] {what}: {note}")
         if not solved:
-            return response
+            # Отказ на одной проверке — не приговор. Решение капчи могло
+            # прийти с задержкой и протухнуть, задача PoW — устареть.
+            # Сдаваться сразу значит терять доступ на ровном месте, так
+            # что берём свежую задачу и пробуем ещё, пока есть круги.
+            failures += 1
+            if failures >= 3 or step >= rounds:
+                return response
+            response = get(session, url, headers, timeout)
+            if isinstance(response, NoAnswer):
+                return response
+            continue
         response = get(session, url, headers, timeout)
         if isinstance(response, NoAnswer):
             if verbose:

@@ -288,6 +288,50 @@ def test_find_items() -> None:
     check("не роняется на пустом ответе", find_items({}) == [])
 
 
+def test_retry_after_refused_check() -> None:
+    print("\nОтказ на проверке:")
+    import unlock
+
+    # Решение капчи могло прийти с задержкой и протухнуть; сдаваться с
+    # первого отказа значит терять доступ на ровном месте.
+    attempts = {"solve": 0, "get": 0}
+
+    class Blocked:
+        status_code = 403
+        text = '{"captcha": 1}'
+        content = b"x"
+
+    class Opened:
+        status_code = 200
+        text = "{}"
+        content = b"data"
+
+    class FakeSession:
+        proxies = {}
+
+        def get(self, *args, **kwargs):
+            attempts["get"] += 1
+            # третий запрос отдаёт данные — если до него дойдёт
+            return Opened() if attempts["solve"] >= 2 else Blocked()
+
+    def flaky_solve(session, url, body, timeout=30):
+        attempts["solve"] += 1
+        return (attempts["solve"] >= 2), ("прошла" if attempts["solve"] >= 2
+                                          else "verify отказал")
+
+    original = unlock.firewall.solve
+    unlock.firewall.solve = flaky_solve
+    try:
+        response = unlock.ensure_access(FakeSession(), "https://x", verbose=False)
+    finally:
+        unlock.firewall.solve = original
+
+    check("после отказа пробуем ещё", attempts["solve"] >= 2,
+          f"попыток решения: {attempts['solve']}")
+    check("в итоге доступ открыт", response.status_code == 200,
+          str(response.status_code))
+
+
 def test_dead_proxy_does_not_crash() -> None:
     print("\nМёртвая прокси:")
     import unlock
@@ -351,6 +395,7 @@ def main() -> None:
     test_sitemap()
     test_status_report()
     test_find_items()
+    test_retry_after_refused_check()
     test_dead_proxy_does_not_crash()
     test_broken_item_does_not_crash()
     test_bot_module()
