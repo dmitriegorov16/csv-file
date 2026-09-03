@@ -196,10 +196,38 @@ def soak(count: int, proxy: str, proxy_list_url: str) -> None:
     from unlock import ensure_access, find_items, open_session
 
     print(f"\n6. Нагрузка: {count} запросов подряд")
-    session, _ = open_session(proxy, proxy_list_url, verbose=False)
-    if session is None:
+    result = run_soak(count, proxy, proxy_list_url, verbose=True)
+    if result["открылся"] is False:
         fail("нагрузка", "доступ не открылся")
         return
+    share = result["доля"]
+    if result["восстановлений"]:
+        ok("восстановление",
+           f"после отказа доступ возвращался {result['восстановлений']} раз(а)")
+    if result["кб"]:
+        print(f"   {result['кб']:.0f} КБ на страницу, "
+              f"~{result['кб'] * 600 / 1024 / 1024:.2f} ГБ на 30000")
+    if share >= 90:
+        ok("нагрузка", f"{share:.0f}% запросов прошли — адрес держит")
+    elif share >= 50:
+        warn("нагрузка", f"прошло лишь {share:.0f}% — прогон будет рваным, "
+                         f"но с восстановлением дойдёт")
+    else:
+        fail("нагрузка", f"прошло лишь {share:.0f}% — этот адрес долгий "
+                         f"прогон не выдержит")
+
+
+def run_soak(count: int, proxy: str, proxy_list_url: str,
+             verbose: bool = False) -> dict:
+    """Серия запросов подряд. Возвращает цифры, чтобы их можно было сравнить."""
+    from catalog_scrape import BASE, LOCATIONS
+    from unlock import ensure_access, find_items, open_session
+
+    empty_result = {"открылся": False, "удачных": 0, "отказов": 0,
+                    "пустых": 0, "доля": 0.0, "восстановлений": 0, "кб": 0.0}
+    session, _ = open_session(proxy, proxy_list_url, verbose=verbose)
+    if session is None:
+        return empty_result
 
     good = blocked = empty = 0
     recovered = 0
@@ -217,7 +245,8 @@ def soak(count: int, proxy: str, proxy_list_url: str) -> None:
         if response.status_code != 200:
             blocked += 1
             was_blocked = True
-            print(f"   [{number:>3}] отказ {response.status_code}")
+            if verbose:
+                print(f"   [{number:>3}] отказ {response.status_code}")
             continue
         total_bytes += len(response.content)
         items = find_items(response.json())
@@ -228,28 +257,70 @@ def soak(count: int, proxy: str, proxy_list_url: str) -> None:
                 was_blocked = False
         else:
             empty += 1
-        if number % 10 == 0:
+        if verbose and number % 10 == 0:
             print(f"   [{number:>3}] удачно {good}, отказов {blocked}, "
                   f"пусто {empty}")
 
     share = good / count * 100
-    print(f"\n   итог: {good}/{count} удачных ({share:.0f}%), "
-          f"отказов {blocked}, пустых {empty}")
-    if recovered:
-        ok("восстановление", f"после отказа доступ возвращался {recovered} раз(а)")
-    if total_bytes and good:
-        per_page = total_bytes / good / 1024
-        print(f"   {per_page:.0f} КБ на страницу, "
-              f"~{per_page * 600 / 1024 / 1024:.2f} ГБ на 30000")
+    if verbose:
+        print(f"\n   итог: {good}/{count} удачных ({share:.0f}%), "
+              f"отказов {blocked}, пустых {empty}")
+    return {"открылся": True, "удачных": good, "отказов": blocked,
+            "пустых": empty, "доля": share, "восстановлений": recovered,
+            "кб": (total_bytes / good / 1024) if good else 0.0}
 
-    if share >= 90:
-        ok("нагрузка", f"{share:.0f}% запросов прошли — адрес держит")
-    elif share >= 50:
-        warn("нагрузка", f"прошло лишь {share:.0f}% — прогон будет рваным, "
-                         f"но с восстановлением дойдёт")
+
+SX_LIST = ("https://sx-list.org/whitelist/"
+           "796QJjVX6P1tCKlz0hYycVS9ZTO0bKUF.txt?limit=100&country=RU&type=")
+
+# Источники адресов, которые есть у нас на руках. Сравнивать их надо в
+# одном заходе и одинаковой нагрузкой: Avito меняет режим со временем, и
+# проверки, разнесённые на полчаса, сравнивают разное.
+SOURCES = [
+    ("напрямую с сервера", "", ""),
+    ("мобильные sx-list", "", SX_LIST + "mob"),
+    ("резидентские sx-list", "", SX_LIST + "res"),
+    ("OkeyProxy", "http://customer-7r2g837952-country-RU:1cixgwby"
+                  "@proxy.okeyproxy.com:31212", ""),
+]
+
+
+def compare(count: int) -> None:
+    """Прогнать одинаковую нагрузку через все источники и сравнить."""
+    print(f"\n6. Сравнение источников, по {count} запросов на каждый")
+    rows = []
+    for name, proxy, list_url in SOURCES:
+        print(f"\n   --- {name}")
+        try:
+            result = run_soak(count, proxy, list_url, verbose=True)
+        except Exception as exc:                     # noqa: BLE001
+            print(f"       сорвалось: {type(exc).__name__}")
+            result = {"открылся": False, "доля": 0.0, "восстановлений": 0,
+                      "кб": 0.0, "удачных": 0, "отказов": 0, "пустых": 0}
+        rows.append((name, result))
+
+    print("\n" + "=" * 66)
+    print(f"{'источник':<24} {'прошло':>8} {'отказов':>8} "
+          f"{'восст.':>7} {'КБ/стр':>8} {'ГБ/30к':>8}")
+    for name, result in rows:
+        if not result["открылся"]:
+            print(f"{name:<24} {'—':>8} {'доступ не открылся':>34}")
+            continue
+        gigabytes = result["кб"] * 600 / 1024 / 1024
+        print(f"{name:<24} {result['доля']:>7.0f}% {result['отказов']:>8} "
+              f"{result['восстановлений']:>7} {result['кб']:>8.0f} "
+              f"{gigabytes:>8.2f}")
+
+    working = [(name, r) for name, r in rows if r["открылся"] and r["доля"] >= 50]
+    print()
+    if working:
+        best = max(working, key=lambda pair: pair[1]["доля"])
+        print(f"Лучший источник: {best[0]} ({best[1]['доля']:.0f}% удачных).")
+        free = [name for name, r in working if name.startswith("напрямую")]
+        if free:
+            print("Сервер справляется сам — прокси и его трафик можно не тратить.")
     else:
-        fail("нагрузка", f"прошло лишь {share:.0f}% — этот адрес долгий "
-                         f"прогон не выдержит")
+        fail("источники", "ни один не выдержал нагрузку")
 
 
 def main() -> None:
@@ -262,6 +333,9 @@ def main() -> None:
     parser.add_argument("--soak", type=int, default=0,
                         help="сделать столько запросов подряд и посмотреть, "
                              "выдержит ли адрес (30 — разумно)")
+    parser.add_argument("--compare", type=int, default=0,
+                        help="прогнать столько запросов через каждый источник "
+                             "адресов и сравнить их в одной таблице")
     args = parser.parse_args()
 
     print("Проверка перед прогоном")
@@ -270,9 +344,14 @@ def main() -> None:
     check_categories()
     check_progress()
     if not args.offline:
-        check_live(args.proxy, args.proxy_list_url)
-        if args.soak:
-            soak(args.soak, args.proxy, args.proxy_list_url)
+        if args.compare:
+            # сравнение само проверяет доступ по каждому источнику,
+            # отдельная живая проверка тут только запутает картину
+            compare(args.compare)
+        else:
+            check_live(args.proxy, args.proxy_list_url)
+            if args.soak:
+                soak(args.soak, args.proxy, args.proxy_list_url)
 
     print("\n" + "=" * 58)
     if problems:
