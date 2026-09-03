@@ -40,6 +40,7 @@ import urllib.request
 from dataclasses import asdict
 from typing import Optional
 
+import firewall
 import proxy_pool
 from scraper import (CSV_FIELDS, DATA_DIR, OUTPUT_CSV, URLS_FILE, Listing,
                      capitalize_city)
@@ -631,6 +632,30 @@ def _count_bytes(size: int) -> None:
         bytes_downloaded += size
 
 
+# Сессия на каждый прокси: куки после решённой капчи имеют смысл только
+# для того IP, которому её показали. Держим их отдельно по адресам.
+SESSIONS: dict = {}
+SESSIONS_LOCK = threading.Lock()
+
+
+def session_for(server: Optional[str]):
+    key = server or ""
+    with SESSIONS_LOCK:
+        session = SESSIONS.get(key)
+        if session is None:
+            session = requests.Session()
+            if server:
+                session.proxies.update(_proxy_dict(server))
+            SESSIONS[key] = session
+        return session
+
+
+def forget_session(server: Optional[str]) -> None:
+    """Адрес выкинут — куки от него больше не нужны."""
+    with SESSIONS_LOCK:
+        SESSIONS.pop(server or "", None)
+
+
 SAVED_BLOCKS = set()
 SAVED_BLOCKS_LOCK = threading.Lock()
 
@@ -700,9 +725,21 @@ def fetch(server: Optional[str], url: str, timeout: int, head_bytes: int = 0,
 
     try:
         if HAVE_REQUESTS:
-            response = requests.get(url, headers=headers, proxies=proxies,
-                                    timeout=timeout, allow_redirects=True)
+            session = session_for(server)
+            response = session.get(url, headers=headers, timeout=timeout,
+                                   allow_redirects=True)
             _count_bytes(len(response.content))
+            # 429 — не отказ, а капча: IP до Avito дошёл, ему показали
+            # виджет. Решаем прямо здесь, в этой же сессии и через тот же
+            # прокси, и повторяем запрос с полученной кукой.
+            if response.status_code == 429 and firewall.available():
+                solved, note_text = firewall.solve(session, url, response.text,
+                                                   timeout)
+                print(f"      [капча] {note_text}")
+                if solved:
+                    response = session.get(url, headers=headers, timeout=timeout,
+                                           allow_redirects=True)
+                    _count_bytes(len(response.content))
             # 206 — сервер отдал запрошенный кусок, 200 — прислал всё целиком
             if response.status_code not in (200, 206):
                 save_block_page(response.status_code, response.text)
@@ -964,7 +1001,10 @@ def main() -> None:
             # и третий заход через него ничего не дадут, кроме потери
             # времени. Всё остальное (таймаут, разрыв, 429) может быть
             # случайностью, поэтому штрафуем как раньше.
-            if error == "HTTP 439":
+            if error in ("HTTP 439", "HTTP 403"):
+                # 403 — та же страница-заглушка, что и 439, только без
+                # капчи: ни формы, ни виджета, одна картинка с извинением
+                forget_session(server)
                 ring.kill(server)
             else:
                 ring.punish(server)
@@ -1071,6 +1111,12 @@ def main() -> None:
                   f"на 30000 нужно ~{total_gb:.2f} ГБ")
         else:
             print()
+
+    captcha_line = firewall.report()
+    if captcha_line:
+        print(captcha_line)
+    elif not firewall.available():
+        print("Капча: ключ RUCAPTCHA_API_KEY не задан — 429 просто пропускались")
 
     if ip_stats:
         print(f"\nАдреса выхода: {len(ip_stats)} различных на "
