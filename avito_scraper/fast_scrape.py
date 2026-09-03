@@ -327,6 +327,16 @@ try:
 except ImportError:
     HAVE_SOCKS = False
 
+try:
+    # curl_cffi шлёт запросы с TLS-отпечатком настоящего Chrome, оставаясь
+    # обычным HTTP-клиентом. Голый requests палится на первом же
+    # рукопожатии: набор шифров и расширений у него не браузерный, и
+    # антибот это видит ещё до того, как посмотрит на заголовки.
+    from curl_cffi import requests as cffi_requests
+    HAVE_CFFI = True
+except ImportError:
+    HAVE_CFFI = False
+
 
 def _proxy_dict(server: str) -> dict:
     # socks5h означает "резолвить DNS на стороне прокси" — так надёжнее
@@ -421,7 +431,8 @@ def _count_bytes(size: int) -> None:
         bytes_downloaded += size
 
 
-def fetch(server: Optional[str], url: str, timeout: int, head_bytes: int = 0):
+def fetch(server: Optional[str], url: str, timeout: int, head_bytes: int = 0,
+          impersonate: str = ""):
     """Возвращает (html, '') либо ('', причина).
 
     SOCKS-прокси качаются через requests+PySocks: urllib их не умеет
@@ -437,6 +448,24 @@ def fetch(server: Optional[str], url: str, timeout: int, head_bytes: int = 0):
     """
     if server and server.startswith("socks") and not HAVE_REQUESTS:
         return "", "нет requests для socks"
+
+    if impersonate and HAVE_CFFI:
+        try:
+            response = cffi_requests.get(
+                url, headers=headers if head_bytes else None,
+                proxies=_proxy_dict(server) if server else None,
+                impersonate=impersonate, timeout=timeout)
+            if response.status_code not in (200, 206):
+                return "", f"HTTP {response.status_code}"
+            _count_bytes(len(response.content))
+            body = response.text
+        except Exception as exc:
+            return "", type(exc).__name__
+        if any(marker in body for marker in FIREWALL_MARKERS):
+            return "", "фаервол"
+        if "og:title" not in body:
+            return "", "без данных"
+        return body, ""
 
     headers = dict(HEADERS)
     if head_bytes:
@@ -498,6 +527,10 @@ def main() -> None:
     parser.add_argument("--head-bytes", type=int, default=0,
                         help="качать только первые N байт страницы (Range-запрос); "
                              "нужные поля лежат в <head>, это экономит платный трафик. Разумно 60000")
+    parser.add_argument("--impersonate", default="",
+                        help="слать запросы с TLS-отпечатком браузера через "
+                             "curl_cffi, например chrome124. Обычный HTTP-клиент "
+                             "виден антиботу ещё на TLS-рукопожатии")
     parser.add_argument("--log-ip", action="store_true",
                         help="перед каждым запросом узнавать реальный IP выхода "
                              "и печатать связку сессия -> IP -> ответ Avito")
@@ -535,6 +568,9 @@ def main() -> None:
     ring = None
     mine: list = []
     servers: list = []
+
+    if args.impersonate and not HAVE_CFFI:
+        sys.exit("Для --impersonate нужен curl_cffi:  pip install curl_cffi")
 
     env_server = os.environ.get("AVITO_PROXY_SERVER", "").strip()
     env_user = os.environ.get("AVITO_PROXY_USERNAME", "").strip()
@@ -624,7 +660,8 @@ def main() -> None:
                 if args.pace:
                     time.sleep(args.pace)
                 ip = exit_ip(server) if args.log_ip else ""
-                body, error = fetch(server, url, args.timeout, args.head_bytes)
+                body, error = fetch(server, url, args.timeout, args.head_bytes,
+                                    args.impersonate)
                 if args.log_ip:
                     session = server.split('session-')[-1].split(':')[0][:12]
                     print(f"      сессия {session} -> {ip} -> "
