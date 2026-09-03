@@ -122,6 +122,28 @@ def test_no_duplicates() -> None:
     check("повтор отсеян по id", len(rows) == 1, f"строк {len(rows)}")
 
 
+def test_limit_counts_once() -> None:
+    print("\nСчёт до цели:")
+    # done пополняется той же строкой, что и written, поэтому складывать
+    # их — значит считать каждую строку дважды. Сбор останавливался на
+    # 85 строках, решив, что собрал 170 из 150.
+    already, done, written, limit = 0, set(), 0, 150
+    for number in range(1, 200):
+        if already + written >= limit:
+            break
+        done.add(number)
+        written += 1
+    check("до цели дошли ровно", written == limit, f"собрано {written}")
+
+    # и продолжение прогона считает от того, что уже было
+    already, written = 100, 0
+    for number in range(1, 200):
+        if already + written >= limit:
+            break
+        written += 1
+    check("продолжение добирает остаток", written == 50, f"добрано {written}")
+
+
 def test_chunk_file() -> None:
     print("\nПорция для Telegram:")
     from catalog_scrape import send_chunk, to_listing, DATA_DIR
@@ -304,6 +326,7 @@ def main() -> None:
     test_catalog_mapping()
     test_service_record_skipped()
     test_no_duplicates()
+    test_limit_counts_once()
     test_chunk_file()
     test_multipart()
     test_firewall_answers()

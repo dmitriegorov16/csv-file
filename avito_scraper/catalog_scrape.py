@@ -251,8 +251,13 @@ def main() -> None:
 
     done = load_done()
     out_path = Path(args.out)
-    next_id = len(done) + 1
-    print(f"уже собрано ранее: {len(done)}; цель: {args.limit}\n")
+    # Сколько было до этого прогона. Складывать written с len(done)
+    # нельзя: done пополняется по ходу, и каждая новая строка считается
+    # дважды — из-за чего сбор на 85 строках решал, что набрал 170, и
+    # останавливался вдвое раньше цели.
+    already = len(done)
+    next_id = already + 1
+    print(f"уже собрано ранее: {already}; цель: {args.limit}\n")
 
     started = time.time()
     written = requests_made = refused = 0
@@ -265,10 +270,10 @@ def main() -> None:
 
         for location_id, city in LOCATIONS:
             for section_id, section in sections:
-                if written + len(done) >= args.limit:
+                if already + written >= args.limit:
                     break
                 for page in range(1, args.pages + 1):
-                    if written + len(done) >= args.limit:
+                    if already + written >= args.limit:
                         break
                     url = (f"{BASE}/web/1/js/items?categoryId={section_id}"
                            f"&locationId={location_id}&page={page}"
@@ -325,7 +330,7 @@ def main() -> None:
                     # записанных при непустом ответе — что всё это уже есть
                     print(f"  {city}/{section}: страница {page} -> "
                           f"пришло {len(items)}, новых {fresh} "
-                          f"(всего {written + len(done) - fresh})")
+                          f"(всего {already + written})")
 
                     # Порция уходит файлом по мере накопления: так видно,
                     # что собирается именно нужное, уже на пятидесятой
