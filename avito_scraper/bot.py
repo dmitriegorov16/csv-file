@@ -140,14 +140,20 @@ def main() -> None:
     # «тормозит», хотя он просто разгребает старое.
     offset = 0
     try:
-        old = notify._call("getUpdates", {"offset": -1, "timeout": 0})
+        # Коротко и без повторов: это удобство, а не необходимость. Виснуть
+        # тут нельзя — бот тогда вообще не начнёт слушать, и со стороны это
+        # выглядит как «игнорирует команды».
+        old = notify._call("getUpdates", {"offset": -1, "timeout": 0},
+                           timeout=10, attempts=1)
         for update in old.get("result", []):
             offset = update["update_id"] + 1
-        if offset:
-            print(f"пропускаю накопившиеся сообщения (до {offset})")
+        print(f"пропускаю накопившееся до {offset}" if offset
+              else "очередь пуста, слушаю новые")
     except Exception as exc:
-        print(f"не смог пропустить старое: {type(exc).__name__}")
+        print(f"не смог пропустить старое ({type(exc).__name__}), "
+              f"буду читать всё подряд")
 
+    idle = 0
     while True:
         try:
             # длинное ожидание: сервер держит запрос, пока не придёт
@@ -160,7 +166,18 @@ def main() -> None:
             time.sleep(5)
             continue
 
-        for update in updates.get("result", []):
+        # Признак жизни: без него молчащий лог не отличить от зависшего
+        # бота, а именно на этом мы и потеряли время.
+        received = updates.get("result", [])
+        if received:
+            print(f"пришло сообщений: {len(received)}")
+            idle = 0
+        else:
+            idle += 1
+            if idle % 5 == 0:
+                print(f"{time.strftime('%H:%M:%S')} жду сообщений")
+
+        for update in received:
             offset = update["update_id"] + 1
             message = update.get("message") or {}
             text = message.get("text", "")
