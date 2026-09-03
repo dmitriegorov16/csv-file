@@ -42,14 +42,21 @@ def enabled() -> bool:
 def _call(method: str, fields: dict, timeout: int = 30, attempts: int = 3) -> dict:
     """Запрос к Telegram с повтором.
 
-    Одна медленная или сорвавшаяся отправка не должна ронять многочасовой
-    сбор: сеть на сервере иногда подтормаживает, и это нормально."""
+    Именно GET, а не POST: с некоторых серверов POST на api.telegram.org
+    не проходит — соединение открывается и висит до таймаута, тогда как
+    GET с теми же параметрами отвечает мгновенно. Telegram принимает все
+    методы обоими способами, так что выбираем работающий. Исключение —
+    отправка файла: там без POST никак.
+
+    Повтор нужен потому, что одна сорвавшаяся отправка не должна ронять
+    многочасовой сбор."""
     url = API.format(token=token(), method=method)
-    data = urllib.parse.urlencode(fields).encode()
+    if fields:
+        url += "?" + urllib.parse.urlencode(fields)
     last = None
     for attempt in range(attempts):
         try:
-            with urllib.request.urlopen(url, data=data, timeout=timeout) as response:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
                 return json.loads(response.read().decode("utf-8", "replace"))
         except Exception as exc:
             last = exc
@@ -133,4 +140,11 @@ def send_file(path, caption: str = "") -> str:
             result = json.loads(response.read().decode("utf-8", "replace"))
         return "отправлено" if result.get("ok") else str(result)[:120]
     except Exception as exc:
-        return f"не отправилось: {type(exc).__name__}"
+        # Файл иначе как POST не отправить, а POST с этого сервера может не
+        # проходить. Тогда хотя бы сообщаем словами, что файл готов и где
+        # лежит: молчание выглядело бы как «сбор не работает».
+        note = (f"Файл {path.name} готов ({path.stat().st_size // 1024} КБ), "
+                f"но отправить не вышло ({type(exc).__name__}). "
+                f"Он на сервере: {path}")
+        send_message(note)
+        return f"не отправилось: {type(exc).__name__} (сообщил текстом)"
