@@ -58,7 +58,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--from", dest="start", type=int, default=1)
-    parser.add_argument("--to", dest="end", type=int, default=120)
+    parser.add_argument("--to", dest="end", type=int, default=200)
     parser.add_argument("--location", type=int, default=637640)
     parser.add_argument("--pause", type=float, default=0.3)
     parser.add_argument("--proxy", default="",

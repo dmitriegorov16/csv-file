@@ -152,12 +152,12 @@ def categories(session, verbose: bool = True) -> list:
     # обход по ним даёт нули в каждой строке лога, притворяясь работой.
     if verbose:
         print("проверенного списка разделов нет — ищу рабочие номера "
-              "(это займёт пару минут, зато потом сохранится)")
+              "с запасом, до 200 (несколько минут, зато один раз)")
     from find_categories import probe
 
     found = []
     refused = 0
-    for category_id in range(1, 121):
+    for category_id in range(1, 201):
         name, code = probe(session, category_id, LOCATIONS[0][0])
         if name:
             found.append({"id": category_id, "name": name})

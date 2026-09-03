@@ -65,7 +65,8 @@ def start_collector() -> str:
 
     DATA.mkdir(parents=True, exist_ok=True)
     command = [sys.executable, "-u", str(HERE / "catalog_scrape.py"),
-               "--limit", str(options.limit), "--chunk", str(options.chunk)]
+               "--limit", str(options.limit), "--chunk", str(options.chunk),
+               "--pause", str(options.pause)]
     if options.proxy:
         command += ["--proxy", options.proxy]
     if options.proxy_list_url:
@@ -77,8 +78,15 @@ def start_collector() -> str:
     with LOG.open("a", encoding="utf-8") as handle:
         subprocess.Popen(command, stdout=handle, stderr=handle, cwd=str(HERE),
                          env=environment, start_new_session=True)
+    # оценка времени: одна страница даёт 50 объявлений, к паузе
+    # добавляется секунда-полторы на сам запрос и разбор
+    pages = max(1, options.limit // 50)
+    minutes = pages * (options.pause + 1.5) / 60
     return (f"Начинаю сбор: цель {options.limit} объявлений.\n"
-            f"Каждые {options.chunk} строк пришлю файлом, в конце — весь CSV.")
+            f"Пауза {options.pause} с, примерно {pages} запросов — "
+            f"это около {minutes:.0f} мин.\n"
+            f"Каждые {options.chunk} строк пришлю файлом, в конце — весь CSV.\n"
+            f"Всё важное из лога буду пересылать сюда.")
 
 
 def stop_collector() -> str:
@@ -117,8 +125,52 @@ async def watch_chunks(bot: Bot) -> None:
             print(f"наблюдение споткнулось: {type(exc).__name__}")
 
 
+# Что из лога сбора стоит пересылать в чат. Пересылать всё нельзя:
+# страниц будут сотни, и важное утонет. Пересылаем то, что меняет
+# картину: открытие доступа, смену источника, проверки, отказы и сбои.
+WORTH_TELLING = ("доступ открыт", "источник:", "перехожу к следующему",
+                 "капча", "proof-of-work", "отказ", "не открыл", "сбой",
+                 "Traceback", "Error", "нашёл разделов", "Записано за прогон",
+                 "останавливаюсь", "не разобралось", "прокси из списка",
+                 "выхожу с")
+
+log_position = 0
+
+
+async def forward_log(bot: Bot) -> None:
+    """Переслать новые строки лога сбора.
+
+    Смысл в том, чтобы не заходить на сервер вообще: всё, что случилось с
+    прогоном, видно в чате."""
+    global log_position
+    if not LOG.exists():
+        return
+    size = LOG.stat().st_size
+    if size < log_position:          # лог начали заново
+        log_position = 0
+    if size == log_position:
+        return
+
+    with LOG.open(encoding="utf-8", errors="replace") as handle:
+        handle.seek(log_position)
+        fresh = handle.read()
+        log_position = handle.tell()
+
+    lines = [line.strip() for line in fresh.splitlines() if line.strip()]
+    interesting = [line for line in lines
+                   if any(mark in line for mark in WORTH_TELLING)]
+    if not interesting:
+        return
+    # Слать по строчке — значит завалить чат; собираем в одно сообщение.
+    for start in range(0, len(interesting), 20):
+        piece = "\n".join(interesting[start:start + 20])
+        await bot.send_message(watching_chat, piece[:4000])
+
+
 async def check_once(bot: Bot, was_running: bool) -> bool:
     """Один обход папки. Возвращает, идёт ли сбор сейчас."""
+    await forward_log(bot)
+
     if CHUNKS.exists():
         for path in sorted(CHUNKS.glob("*.csv")):
             if path.name in sent_chunks:
@@ -158,7 +210,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--limit", type=int, default=150)
-    parser.add_argument("--chunk", type=int, default=50)
+    parser.add_argument("--chunk", type=int, default=1000,
+                        help="каждые столько строк — отдельный файл в чат")
+    parser.add_argument("--pause", type=float, default=2.0,
+                        help="пауза между запросами: чем больше, тем спокойнее "
+                             "относится Avito")
     parser.add_argument("--proxy", default="")
     parser.add_argument("--proxy-list-url", default="")
     options = parser.parse_args()

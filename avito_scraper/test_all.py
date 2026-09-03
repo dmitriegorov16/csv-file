@@ -420,6 +420,30 @@ def test_broken_item_does_not_crash() -> None:
     check("город взят из ссылки", row.city == "Москва", row.city)
 
 
+def test_log_forwarding() -> None:
+    print("\nПересылка лога в чат:")
+    try:
+        import bot
+    except ImportError:
+        check("aiogram установлен", False)
+        return
+
+    lines = [
+        "  Москва/Автомобили: страница 3 -> пришло 50, новых 50 (всего 150)",
+        "   [1] капча: капча пройдена",
+        "      три отказа подряд на источнике «сервер» — перехожу к следующему",
+        "  Казань/Квартиры: страница 1 -> пришло 50, новых 50 (всего 200)",
+        "Traceback (most recent call last):",
+    ]
+    worth = [line for line in lines
+             if any(mark in line for mark in bot.WORTH_TELLING)]
+    # обычные строки о страницах не пересылаем: их сотни, важное утонет
+    check("рутинные страницы не шлём", len(worth) == 3, str(len(worth)))
+    check("капча попала", any("капча" in line for line in worth))
+    check("смена источника попала", any("перехожу" in line for line in worth))
+    check("падение попало", any("Traceback" in line for line in worth))
+
+
 def test_bot_module() -> None:
     print("\nБот:")
     try:
@@ -454,6 +478,7 @@ def main() -> None:
     test_retry_after_refused_check()
     test_dead_proxy_does_not_crash()
     test_broken_item_does_not_crash()
+    test_log_forwarding()
     test_bot_module()
 
     print(f"\n{'=' * 58}")
