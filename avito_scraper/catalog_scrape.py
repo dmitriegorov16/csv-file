@@ -38,7 +38,8 @@ import requests
 
 import notify
 from scraper import CSV_FIELDS, DATA_DIR, Listing
-from unlock import ensure_access, find_items, open_session
+from unlock import (ensure_access, find_items, open_from_chain,
+                    open_session, sources_chain)
 from url_meta import city_from_url
 
 BASE = "https://www.avito.ru"
@@ -237,9 +238,17 @@ def main() -> None:
     sys.stderr.reconfigure(line_buffering=True)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    session, _ = open_session(args.proxy, args.proxy_list_url)
+    # Цепочка источников: сервер, затем резервные адреса. Если задан
+    # конкретный прокси, он и есть единственный источник.
+    if args.proxy or args.proxy_list_url:
+        chain = [("указанный вручную", args.proxy, args.proxy_list_url)]
+    else:
+        chain = sources_chain()
+    print("порядок источников: " + " -> ".join(name for name, _, _ in chain))
+
+    session, source, position = open_from_chain(chain)
     if session is None:
-        raise SystemExit("Доступ к Avito не открылся ни через один адрес. "
+        raise SystemExit("Доступ к Avito не открылся ни через один источник. "
                          "Подождите и повторите.")
 
     if args.categories:
@@ -299,14 +308,19 @@ def main() -> None:
                         # дело в адресе, а не в разделе, — берём новый и
                         # проходим проверки заново.
                         if refused >= 3:
-                            print("      три отказа подряд — меняю адрес")
-                            fresh_session, _ = open_session(
-                                args.proxy, args.proxy_list_url, verbose=True)
-                            if fresh_session is None:
-                                print("      новый адрес не открылся, "
-                                      "останавливаюсь")
+                            # Источник перестал пускать: берём следующий в
+                            # цепочке, а не долбимся в тот же. Возвращаться
+                            # к нему сразу смысла нет — он закрылся только
+                            # что.
+                            print(f"      три отказа подряд на источнике "
+                                  f"«{source}» — перехожу к следующему")
+                            fresh, source, position = open_from_chain(
+                                chain, verbose=True, skip=position + 1)
+                            if fresh is None:
+                                print("      ни один источник не открылся, "
+                                      "останавливаюсь. Прогресс сохранён.")
                                 raise SystemExit(1)
-                            session = fresh_session
+                            session = fresh
                             refused = 0
                         break
                     refused = 0

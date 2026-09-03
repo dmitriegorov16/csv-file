@@ -180,6 +180,46 @@ def ensure_access(session, url: str, rounds: int = 6, verbose: bool = True,
     return response
 
 
+def sources_chain() -> list:
+    """Источники адресов по порядку предпочтения.
+
+    Сначала сам сервер: его трафик бесплатен, и проверка показала, что он
+    держит нагрузку не хуже прокси. Дальше платные адреса — на случай,
+    когда сервер уйдёт в жёсткий режим посреди прогона.
+
+    Адреса и пароли берутся из окружения, а не из кода: в репозитории им
+    не место.
+
+        AVITO_BACKUP_PROXY   — резервный прокси, например OkeyProxy
+        AVITO_PROXY_LIST_URL — ссылка на список адресов провайдера
+    """
+    chain = [("сервер", "", "")]
+    backup = os.environ.get("AVITO_BACKUP_PROXY", "").strip()
+    if backup:
+        chain.append(("резервный прокси", backup, ""))
+    list_url = os.environ.get("AVITO_PROXY_LIST_URL", "").strip()
+    if list_url:
+        chain.append(("список провайдера", "", list_url))
+    return chain
+
+
+def open_from_chain(chain: list = None, verbose: bool = True, skip: int = 0):
+    """Открыть доступ первым источником, который сработает.
+
+    Возвращает (сессия, имя источника, его номер). skip — с какого места
+    начинать: когда адрес умер посреди прогона, возвращаться к нему сразу
+    незачем, разумнее взять следующий."""
+    chain = chain or sources_chain()
+    for position in range(skip, skip + len(chain)):
+        name, proxy, list_url = chain[position % len(chain)]
+        if verbose:
+            print(f"источник: {name}")
+        session, response = open_session(proxy, list_url, verbose=verbose)
+        if session is not None:
+            return session, name, position % len(chain)
+    return None, "", 0
+
+
 def open_session(proxy: str = "", proxy_list_url: str = "", attempts: int = 6,
                  probe_url: str = CATALOG, verbose: bool = True):
     """Сессия, через которую Avito реально отвечает.

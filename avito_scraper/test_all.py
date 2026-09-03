@@ -288,6 +288,61 @@ def test_find_items() -> None:
     check("не роняется на пустом ответе", find_items({}) == [])
 
 
+def test_source_chain() -> None:
+    print("\nЦепочка источников:")
+    import os
+    import unlock
+
+    saved = {k: os.environ.get(k) for k in
+             ("AVITO_BACKUP_PROXY", "AVITO_PROXY_LIST_URL")}
+    try:
+        for key in saved:
+            os.environ.pop(key, None)
+        chain = unlock.sources_chain()
+        check("без настроек — только сервер",
+              [name for name, _, _ in chain] == ["сервер"], str(chain))
+
+        os.environ["AVITO_BACKUP_PROXY"] = "http://u:p@host:1"
+        os.environ["AVITO_PROXY_LIST_URL"] = "https://list"
+        chain = unlock.sources_chain()
+        check("порядок: сервер, резерв, список",
+              [name for name, _, _ in chain]
+              == ["сервер", "резервный прокси", "список провайдера"], str(chain))
+        # Проверяем сам вид «логин:пароль@хост», а не конкретный пароль:
+        # написать секрет в тест ради проверки, что его нет в коде, —
+        # значит положить его в репозиторий своими руками.
+        import re as regexp
+        sources = "".join(Path(name).read_text(encoding="utf-8")
+                          for name in ("unlock.py", "catalog_scrape.py",
+                                       "preflight.py"))
+        check("в коде нет зашитых логинов с паролями",
+              not regexp.search(r"://[^\s\"']+:[^\s\"']+@", sources))
+
+        # умерший источник пропускается: skip начинает со следующего
+        tried = []
+
+        def fake_open(proxy="", proxy_list_url="", attempts=6, probe_url="",
+                      verbose=True):
+            tried.append(proxy or proxy_list_url or "сервер")
+            return ("сессия", None) if len(tried) > 1 else (None, None)
+
+        original = unlock.open_session
+        unlock.open_session = fake_open
+        try:
+            session, name, position = unlock.open_from_chain(chain, verbose=False,
+                                                             skip=1)
+        finally:
+            unlock.open_session = original
+        check("начали не с начала", tried[0] != "сервер", str(tried))
+        check("нашли рабочий источник", session == "сессия", str(name))
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def test_retry_after_refused_check() -> None:
     print("\nОтказ на проверке:")
     import unlock
@@ -395,6 +450,7 @@ def main() -> None:
     test_sitemap()
     test_status_report()
     test_find_items()
+    test_source_chain()
     test_retry_after_refused_check()
     test_dead_proxy_does_not_crash()
     test_broken_item_does_not_crash()

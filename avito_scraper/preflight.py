@@ -270,26 +270,20 @@ def run_soak(count: int, proxy: str, proxy_list_url: str,
             "кб": (total_bytes / good / 1024) if good else 0.0}
 
 
-SX_LIST = ("https://sx-list.org/whitelist/"
-           "796QJjVX6P1tCKlz0hYycVS9ZTO0bKUF.txt?limit=100&country=RU&type=")
-
-# Источники адресов, которые есть у нас на руках. Сравнивать их надо в
-# одном заходе и одинаковой нагрузкой: Avito меняет режим со временем, и
-# проверки, разнесённые на полчаса, сравнивают разное.
-SOURCES = [
-    ("напрямую с сервера", "", ""),
-    ("мобильные sx-list", "", SX_LIST + "mob"),
-    ("резидентские sx-list", "", SX_LIST + "res"),
-    ("OkeyProxy", "http://customer-7r2g837952-country-RU:1cixgwby"
-                  "@proxy.okeyproxy.com:31212", ""),
-]
-
-
 def compare(count: int) -> None:
-    """Прогнать одинаковую нагрузку через все источники и сравнить."""
+    """Прогнать одинаковую нагрузку через все источники и сравнить.
+
+    Источники берутся из той же цепочки, которой пользуется сбор, — иначе
+    проверка меряла бы одно, а работал бы код по-другому. Адреса и пароли
+    приходят из окружения (AVITO_BACKUP_PROXY, AVITO_PROXY_LIST_URL): в
+    репозитории им не место."""
+    from unlock import sources_chain
+
+    sources = sources_chain()
     print(f"\n6. Сравнение источников, по {count} запросов на каждый")
+    print("   " + " -> ".join(name for name, _, _ in sources))
     rows = []
-    for name, proxy, list_url in SOURCES:
+    for name, proxy, list_url in sources:
         print(f"\n   --- {name}")
         try:
             result = run_soak(count, proxy, list_url, verbose=True)
