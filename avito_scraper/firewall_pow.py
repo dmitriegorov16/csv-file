@@ -138,20 +138,30 @@ def solve(session, page_url: str, body: str, timeout: int = 30) -> tuple:
     spent = time.time() - started
     _note("секунд", spent)
 
-    try:
-        response = session.post(VERIFY_URL,
-                                json={"challenge": challenge, "nonce": nonce},
-                                headers=headers, timeout=timeout)
-        verified = bool(_find(response.json(), "verified"))
-    except Exception as exc:
-        return False, f"/verify не ответил: {type(exc).__name__}"
+    # Что считается "challenge" на шаге verify, из минифицированного кода
+    # не видно: там и исходная строка, и выданный JWT называются
+    # одинаково. Сервер на неверный вариант отвечает "invalid token", то
+    # есть говорит прямо. Проверка стоит только процессорного времени,
+    # поэтому пробуем оба варианта, а не гадаем — но начинаем с JWT:
+    # слово "token" указывает на него.
+    last = ""
+    for label, value in (("JWT", token), ("исходная строка", challenge)):
+        try:
+            response = session.post(VERIFY_URL,
+                                    json={"challenge": value, "nonce": nonce},
+                                    headers=headers, timeout=timeout)
+            verdict = response.json()
+        except Exception as exc:
+            return False, f"/verify не ответил: {type(exc).__name__}"
 
-    if verified:
-        _note("решено")
-        return True, (f"проверка пройдена: сложность {complexity}, "
-                      f"nonce {nonce}, {spent:.1f} с")
+        if _find(verdict, "verified") is True:
+            _note("решено")
+            return True, (f"проверка пройдена ({label}): сложность "
+                          f"{complexity}, nonce {nonce}, {spent:.1f} с")
+        last = f"{label} -> {response.text[:120]}"
+
     _note("не подтвердилось")
-    return False, f"verify отказал: {response.text[:150]}"
+    return False, f"verify отказал: {last}"
 
 
 def report() -> str:
