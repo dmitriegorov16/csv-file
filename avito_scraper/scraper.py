@@ -107,14 +107,34 @@ def launch_browser(pw, headless: bool):
 BLOCKED_RESOURCE_TYPES = {"image", "media", "font", "stylesheet"}
 
 
-def new_context(pw_browser, headless_ua: Optional[str] = None, block_resources: bool = True):
-    ua = headless_ua or random.choice(USER_AGENTS)
-    context = pw_browser.new_context(
-        user_agent=ua,
-        locale="ru-RU",
-        viewport={"width": random.randint(1280, 1600), "height": random.randint(800, 1000)},
-        extra_http_headers={"Accept-Language": "ru-RU,ru;q=0.9"},
-    )
+IPHONE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+             "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
+             "Mobile/15E148 Safari/604.1")
+
+
+def new_context(pw_browser, headless_ua: Optional[str] = None,
+                block_resources: bool = True, mobile: bool = False):
+    # При работе через мобильный прокси браузер тоже должен быть
+    # телефоном: запрос с сотового адреса, представляющийся десктопным
+    # Chrome под Windows, сам себе противоречит.
+    if mobile:
+        context = pw_browser.new_context(
+            user_agent=IPHONE_UA,
+            locale="ru-RU",
+            viewport={"width": 390, "height": 844},
+            device_scale_factor=3,
+            is_mobile=True,
+            has_touch=True,
+            extra_http_headers={"Accept-Language": "ru-RU,ru;q=0.9"},
+        )
+    else:
+        context = pw_browser.new_context(
+            user_agent=headless_ua or random.choice(USER_AGENTS),
+            locale="ru-RU",
+            viewport={"width": random.randint(1280, 1600),
+                      "height": random.randint(800, 1000)},
+            extra_http_headers={"Accept-Language": "ru-RU,ru;q=0.9"},
+        )
     # немного скрыть автоматизацию
     context.add_init_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
@@ -610,7 +630,8 @@ def parse_item(page: Page, url: str, item_id: int, delay: tuple[float, float]) -
     )
 
 
-def scrape(limit: Optional[int], delay: tuple[float, float], headless: bool, block_resources: bool = True) -> None:
+def scrape(limit: Optional[int], delay: tuple[float, float], headless: bool,
+           block_resources: bool = True, mobile: bool = False) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not URLS_FILE.exists():
         print("Нет очереди ссылок. Сначала запустите: python scraper.py collect ...")
@@ -637,7 +658,7 @@ def scrape(limit: Optional[int], delay: tuple[float, float], headless: bool, blo
     write_header = not OUTPUT_CSV.exists()
     with sync_playwright() as pw:
         browser = launch_browser(pw, headless)
-        context = new_context(browser, block_resources=block_resources)
+        context = new_context(browser, block_resources=block_resources, mobile=mobile)
         page = context.new_page()
         attach_diagnostics(page)
 
@@ -714,6 +735,8 @@ def main() -> None:
     p_scrape.add_argument("--block-resources", action="store_true", default=True,
                             help="не грузить картинки/шрифты/css (экономит трафик, включено по умолчанию)")
     p_scrape.add_argument("--no-block-resources", dest="block_resources", action="store_false")
+    p_scrape.add_argument("--mobile", action="store_true",
+                          help="эмулировать iPhone: нужно при работе через мобильный прокси")
 
     args = parser.parse_args()
 
@@ -722,7 +745,8 @@ def main() -> None:
     elif args.command == "sitemap":
         collect_from_sitemap(args.category, args.max_urls)
     elif args.command == "scrape":
-        scrape(args.limit, (args.delay_min, args.delay_max), args.headless, args.block_resources)
+        scrape(args.limit, (args.delay_min, args.delay_max), args.headless,
+               args.block_resources, args.mobile)
 
 
 if __name__ == "__main__":
