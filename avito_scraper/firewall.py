@@ -151,7 +151,12 @@ def solve(session, page_url: str, page_html: str, timeout: int = 30,
         _note("нет виджета")
         return False, f"неизвестный виджет: {json.dumps(descriptor)[:200]}"
 
-    payload = {"captcha": "", "hCaptchaResponse": "", "geetestResponse": {}}
+    # Форма тела вычитана из bootstrap-desktop.js:
+    #     body: k({captcha, hCaptchaResponse}, geetestResponse)
+    # где k — склейка объектов. То есть поля решения geetest лежат на
+    # верхнем уровне, а не вложенным объектом: вложенный сервер просто не
+    # видит и отвечает "verified": false, что мы и получали.
+    payload = {"captcha": "", "hCaptchaResponse": ""}
     try:
         if kind == GEETEST:
             # id виджета может прийти прямо в ответе /get; если нет —
@@ -162,7 +167,10 @@ def solve(session, page_url: str, page_html: str, timeout: int = 30,
                 match = GEETEST_ID_RE.search(page_html)
                 captcha_id = match.group(1) if match else DEFAULT_GEETEST_ID
             result = solver().geetest_v4(captcha_id=captcha_id, url=page_url)
-            payload["geetestResponse"] = json.loads(result["code"])
+            solution = result["code"]
+            if isinstance(solution, str):
+                solution = json.loads(solution)
+            payload.update(solution)
         elif kind == HCAPTCHA:
             sitekey = _find(descriptor, "sitekey") or _find(descriptor, "siteKey")
             if not sitekey:
@@ -184,11 +192,11 @@ def solve(session, page_url: str, page_html: str, timeout: int = 30,
         print(f"      [debug] /get ответил: {json.dumps(descriptor)[:300]}")
         print(f"      [debug] шлём на verify: {json.dumps(payload)[:600]}")
 
-    # X-Cube страница считает кодом на WebGL. Проверяет ли его сервер —
-    # неизвестно, поэтому сначала пробуем без него: если дело в нём, это
-    # будет видно по ответу, и мы будем знать, а не предполагать.
     try:
-        response = session.post(VERIFY_URL, json=payload, headers=headers,
+        # X-Cube их код всегда шлёт, но по умолчанию пустым — значит
+        # заголовок нужен, а его содержимое необязательно.
+        response = session.post(VERIFY_URL, json=payload,
+                                headers={**headers, "X-Cube": ""},
                                 timeout=timeout)
         verdict = response.json()
     except Exception as exc:
