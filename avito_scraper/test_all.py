@@ -234,6 +234,26 @@ def test_status_report() -> None:
     check("пустые колонки названы", "price" in text and "address" in text)
 
 
+def test_bot_commands() -> None:
+    print("\nКоманды бота:")
+    import bot
+
+    class Args:
+        limit, chunk = 150, 50
+
+    # подменяем действия: проверяется разбор команд, а не запуск сбора
+    bot.start_collector = lambda limit, chunk: f"старт {limit}"
+    bot.stop_collector = lambda: "стоп"
+    bot.status_text = lambda target: "статус"
+
+    check("/start запускает", bot.handle("/start", Args()) == "старт 150")
+    check("слово без слэша тоже", bot.handle("старт", Args()) == "старт 150")
+    check("/status спрашивает", bot.handle("/status", Args()) == "статус")
+    check("/stop останавливает", bot.handle("/stop", Args()) == "стоп")
+    check("на непонятное — подсказка", bot.handle("привет", Args()) == bot.HELP)
+    check("пустое сообщение не роняет", bot.handle("", Args()) == bot.HELP)
+
+
 def main() -> None:
     test_catalog_mapping()
     test_service_record_skipped()
@@ -245,6 +265,7 @@ def main() -> None:
     test_url_meta()
     test_sitemap()
     test_status_report()
+    test_bot_commands()
 
     print(f"\n{'=' * 58}")
     print(f"Пройдено: {len(PASSED)}, провалено: {len(FAILED)}")

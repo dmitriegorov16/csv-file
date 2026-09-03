@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -38,11 +39,22 @@ def enabled() -> bool:
     return bool(token())
 
 
-def _call(method: str, fields: dict, timeout: int = 30) -> dict:
+def _call(method: str, fields: dict, timeout: int = 30, attempts: int = 3) -> dict:
+    """Запрос к Telegram с повтором.
+
+    Одна медленная или сорвавшаяся отправка не должна ронять многочасовой
+    сбор: сеть на сервере иногда подтормаживает, и это нормально."""
     url = API.format(token=token(), method=method)
     data = urllib.parse.urlencode(fields).encode()
-    with urllib.request.urlopen(url, data=data, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8", "replace"))
+    last = None
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(url, data=data, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8", "replace"))
+        except Exception as exc:
+            last = exc
+            time.sleep(2 * (attempt + 1))
+    raise last
 
 
 def chat_id() -> str:
