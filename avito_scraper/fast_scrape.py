@@ -47,22 +47,45 @@ from scraper import (CSV_FIELDS, DATA_DIR, OUTPUT_CSV, URLS_FILE, Listing,
 DONE_FILE = DATA_DIR / "done.txt"          # append-only: по строке на ссылку
 COUNTER_FILE = DATA_DIR / "counter.json"   # только следующий id
 
+# Полный набор заголовков, как у настоящего браузера. Трёх штук
+# (User-Agent/Accept/Accept-Language) мало: живой Chrome шлёт ещё
+# Sec-Fetch-*, Upgrade-Insecure-Requests, Accept-Encoding и client hints,
+# и их отсутствие само по себе выдаёт автоматику.
 HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "ru-RU,ru;q=0.9",
+    "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+               "image/avif,image/webp,image/apng,*/*;q=0.8,"
+               "application/signed-exchange;v=b3;q=0.7"),
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "max-age=0",
+    "Connection": "keep-alive",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
 }
 
-# С мобильного IP оператора логично приходить телефоном: запрос с адреса
-# МТС, представляющийся десктопным Chrome под Windows, выглядит ровно так,
-# как настоящий трафик оттуда не выглядит почти никогда.
+# Safari на iOS: у него свой набор — client hints (sec-ch-ua) он не шлёт
+# вовсе, и прислать их с айфонного User-Agent значит выдать подделку.
 MOBILE_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
                    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 "
                    "Mobile/15E148 Safari/604.1"),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+               "*/*;q=0.8"),
     "Accept-Language": "ru-RU,ru;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 FIREWALL_MARKERS = ("Доступ ограничен", "js-firewall-form", "проверка безопасности")

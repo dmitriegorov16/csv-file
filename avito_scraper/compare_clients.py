@@ -130,23 +130,49 @@ def via_cffi(proxy: str) -> str:
     return "ни один профиль не подошёл"
 
 
+def via_requests_full(proxy: str) -> str:
+    """requests с полным браузерным набором заголовков.
+
+    Отделяет одну гипотезу от другой: библиотека та же, что у обычного
+    requests, IP тот же — отличаются только заголовки. Если этот клиент
+    проходит, а обычный нет, дело именно в них, а не в TLS."""
+    try:
+        import requests
+        from fast_scrape import HEADERS as FULL
+    except ImportError:
+        return "недоступно"
+    try:
+        response = requests.get(TEST_URL, headers=FULL,
+                                proxies={"http": proxy, "https": proxy}, timeout=35)
+        return verdict(response.status_code, response.text)
+    except Exception as exc:
+        return f"ошибка {type(exc).__name__}"
+
+
 CLIENTS = [("curl", via_curl), ("urllib", via_urllib),
-           ("requests", via_requests), ("curl_cffi", via_cffi)]
+           ("requests", via_requests), ("requests+hdrs", via_requests_full),
+           ("curl_cffi", via_cffi)]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--proxy", default="",
+                        help="конкретный прокси, например http://1.2.3.4:8080 — "
+                             "тогда переменные окружения не нужны")
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--pause", type=float, default=6.0)
     args = parser.parse_args()
 
-    if not os.environ.get("AVITO_PROXY_SERVER"):
-        sys.exit("Нужны AVITO_PROXY_SERVER / AVITO_PROXY_USERNAME / AVITO_PROXY_PASSWORD")
-
-    session = f"{random.randrange(16 ** 12):012x}"
-    proxy = proxy_url(session)
-    print(f"Сессия {session} — все запросы уйдут с одного IP\n")
+    if args.proxy:
+        proxy = args.proxy if "://" in args.proxy else f"http://{args.proxy}"
+        print(f"Прокси {proxy} — все запросы уйдут через него\n")
+    elif os.environ.get("AVITO_PROXY_SERVER"):
+        session = f"{random.randrange(16 ** 12):012x}"
+        proxy = proxy_url(session)
+        print(f"Сессия {session} — все запросы уйдут с одного IP\n")
+    else:
+        sys.exit("Укажите --proxy или задайте AVITO_PROXY_SERVER/USERNAME/PASSWORD")
 
     # какой именно IP достался — иначе выводы не с чем связывать
     try:
