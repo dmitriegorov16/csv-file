@@ -871,46 +871,57 @@ def main() -> None:
             reasons[reason] = reasons.get(reason, 0) + 1
 
     def worker() -> None:
+        """Один поток: берёт ссылку, качает, кладёт результат.
+
+        Любое исключение здесь обязано остаться внутри. Если поток умрёт
+        молча, взятая им ссылка никогда не попадёт в results, и главный
+        цикл будет ждать её до конца прогона."""
         while not stop.is_set():
             try:
                 url = tasks.get_nowait()
             except queue.Empty:
                 return
-            for _ in range(args.attempts):
-                if stop.is_set():
-                    return
-                if rotator is not None:
-                    server = rotator.make()
-                elif ring is None:
-                    server = None
-                else:
-                    server = ring.take()
-                    if server is None:
-                        results.put((url, None, "прокси кончились"))
-                        break
-                if args.pace:
-                    time.sleep(args.pace)
-                ip = exit_ip(server) if args.log_ip else ""
-                body, error = fetch(server, url, args.timeout, args.head_bytes,
-                                    args.impersonate, args.mobile)
-                if args.log_ip:
-                    session = server.split('session-')[-1].split(':')[0][:12]
-                    print(f"      сессия {session} -> {ip} -> "
-                          f"{'ОК' if body else error}")
-                    note_ip(ip, bool(body))
-                if body:
-                    if ring is not None:
-                        ring.reward(server)
-                    results.put((url, body, ""))
-                    break
-                note(error)
-                if rotator is not None:
-                    continue       # просто берём следующий IP
-                if ring is None:
-                    break          # свой IP менять не на что
-                ring.punish(server)
+            try:
+                handle_url(url)
+            except Exception as exc:                     # noqa: BLE001
+                results.put((url, None, f"сбой потока: {type(exc).__name__}"))
+
+    def handle_url(url: str) -> None:
+        for _ in range(args.attempts):
+            if stop.is_set():
+                return
+            if rotator is not None:
+                server = rotator.make()
+            elif ring is None:
+                server = None
             else:
-                results.put((url, None, "не вышло ни через один прокси"))
+                server = ring.take()
+                if server is None:
+                    results.put((url, None, "прокси кончились"))
+                    break
+            if args.pace:
+                time.sleep(args.pace)
+            ip = exit_ip(server) if args.log_ip else ""
+            body, error = fetch(server, url, args.timeout, args.head_bytes,
+                                args.impersonate, args.mobile)
+            if args.log_ip:
+                session = server.split('session-')[-1].split(':')[0][:12]
+                print(f"      сессия {session} -> {ip} -> "
+                      f"{'ОК' if body else error}")
+                note_ip(ip, bool(body))
+            if body:
+                if ring is not None:
+                    ring.reward(server)
+                results.put((url, body, ""))
+                break
+            note(error)
+            if rotator is not None:
+                continue       # просто берём следующий IP
+            if ring is None:
+                break          # свой IP менять не на что
+            ring.punish(server)
+        else:
+            results.put((url, None, "не вышло ни через один прокси"))
 
     threads = [threading.Thread(target=worker, daemon=True) for _ in range(args.workers)]
     for thread in threads:
@@ -940,7 +951,24 @@ def main() -> None:
                               f"собрано {ok_count}, неудач {fail_count}")
 
                 if body:
-                    listing = parse_html(body, url, next_id)
+                    # Страница уже стоила запроса через прокси; если на ней
+                    # споткнётся парсер, терять из-за этого весь прогон
+                    # нельзя. Сохраняем её и идём дальше — разберём потом
+                    # локально через parse_file.py.
+                    try:
+                        listing = parse_html(body, url, next_id)
+                    except Exception as exc:             # noqa: BLE001
+                        fail_count += 1
+                        broken = DATA_DIR / f"parse_failed_{next_id}.html"
+                        try:
+                            broken.write_text(body, encoding="utf-8")
+                        except Exception:
+                            pass
+                        print(f"  [{number}/{len(todo)}] разбор упал "
+                              f"({type(exc).__name__}), страница в {broken.name}")
+                        done_handle.write(url + "\n")
+                        done_handle.flush()
+                        continue
                     writer.writerow(asdict(listing))
                     handle.flush()
                     next_id += 1
