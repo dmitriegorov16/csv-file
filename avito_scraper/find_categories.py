@@ -34,8 +34,12 @@ OUT = DATA_DIR / "categories.json"
 def probe(session, category_id: int, location_id: int, timeout: int = 30,
           verbose: bool = False):
     """Одно объявление из раздела: есть ли он и как называется."""
+    # limit=1 не годится: на такой запрос выдача приходит пустой, и все
+    # разделы выглядят несуществующими — при полностью живом доступе.
+    # Десятка достаточно, чтобы среди ответа нашлось настоящее объявление
+    # (первым может стоять служебная запись без urlPath).
     url = (f"{BASE}/web/1/js/items?categoryId={category_id}"
-           f"&locationId={location_id}&page=1&limit=1&display=list")
+           f"&locationId={location_id}&page=1&limit=10&display=list")
     response = ensure_access(session, url, verbose=verbose, timeout=timeout)
     if response.status_code != 200:
         return None, response.status_code
