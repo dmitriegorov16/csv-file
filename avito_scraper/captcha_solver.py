@@ -45,12 +45,31 @@ CAPTCHA_ID_RE = re.compile(r"captchaId\s*=\s*'([a-f0-9]+)'")
 # страница).
 _ACTIVE_WIDGET_JS = """
 () => {
+    const shown = (el) => el && getComputedStyle(el).display !== 'none'
+                       && el.offsetParent !== null;
+
+    // 1. Разметка десктопной страницы фаервола: три контейнера с
+    //    предсказуемыми id, из которых JS показывает ровно один.
     const h = document.querySelector('#h-captcha');
     const g = document.querySelector('#geetest_captcha');
     const i = document.querySelector('#inner-captcha');
-    if (h && getComputedStyle(h).display !== 'none') return 'hcaptcha';
-    if (g && getComputedStyle(g).display !== 'none') return 'geetest';
-    if (i && getComputedStyle(i).display !== 'none') return 'internal';
+    if (shown(h)) return 'hcaptcha';
+    if (shown(g)) return 'geetest';
+    if (shown(i)) return 'internal';
+
+    // 2. Мобильная версия сайта отдаёт другую страницу — там этих id нет
+    //    (мы это видели: firewall_form=False). Поэтому ищем по признакам
+    //    самих виджетов, а не по вёрстке Avito вокруг них.
+    if (document.querySelector('iframe[src*="geetest"], script[src*="gt4"], '
+                             + 'script[src*="geetest"], [class*="geetest"]'))
+        return 'geetest';
+    if (document.querySelector('iframe[src*="hcaptcha"], script[src*="hcaptcha"], '
+                             + '.h-captcha, [data-hcaptcha-sitekey]'))
+        return 'hcaptcha';
+    if (document.querySelector('[data-sitekey]'))
+        return 'hcaptcha';
+    if (document.querySelector('img[src*="captcha"], input[name*="captcha"]'))
+        return 'internal';
     return null;
 }
 """
@@ -97,8 +116,13 @@ def _submit_and_wait(page: Page, inject_js: str, token) -> bool:
 
 
 def _solve_hcaptcha(page: Page, solver) -> bool:
-    sitekey_el = page.query_selector("#h-captcha")
-    sitekey = sitekey_el.get_attribute("data-sitekey") if sitekey_el else None
+    sitekey_el = (page.query_selector("#h-captcha[data-sitekey]")
+                  or page.query_selector("[data-sitekey]")
+                  or page.query_selector("[data-hcaptcha-sitekey]"))
+    sitekey = None
+    if sitekey_el:
+        sitekey = (sitekey_el.get_attribute("data-sitekey")
+                   or sitekey_el.get_attribute("data-hcaptcha-sitekey"))
     if not sitekey:
         print("  -> ожидался hCaptcha, но data-sitekey не найден")
         return False
@@ -123,8 +147,13 @@ def _solve_hcaptcha(page: Page, solver) -> bool:
                 const ta = document.querySelector('#h-captcha-response')
                     || document.querySelector('textarea[name="h-captcha-response"]');
                 if (ta) { ta.value = token; }
-                const form = document.querySelector('.js-firewall-form');
-                if (form) { form.dispatchEvent(new Event('submit')); }
+                const form = document.querySelector('.js-firewall-form')
+                    || (ta && ta.closest('form')) || document.querySelector('form');
+                if (form) {
+                    form.dispatchEvent(new Event('submit'));
+                    try { form.requestSubmit ? form.requestSubmit() : form.submit(); }
+                    catch (e) {}
+                }
             }""",
             token,
         )
@@ -165,8 +194,13 @@ def _solve_geetest(page: Page, solver) -> bool:
             """(payload) => {
                 const ta = document.querySelector('input[name="captcha-response"]');
                 if (ta) { ta.value = JSON.stringify(payload); }
-                const form = document.querySelector('.js-firewall-form');
-                if (form) { form.dispatchEvent(new Event('submit')); }
+                const form = document.querySelector('.js-firewall-form')
+                    || (ta && ta.closest('form')) || document.querySelector('form');
+                if (form) {
+                    form.dispatchEvent(new Event('submit'));
+                    try { form.requestSubmit ? form.requestSubmit() : form.submit(); }
+                    catch (e) {}
+                }
             }""",
             payload,
         )
@@ -189,9 +223,16 @@ def solve_if_present(page: Page) -> bool:
 
     widget = _wait_for_active_widget(page)
     if widget is None:
-        print("  -> капча/блокировка есть, но ни один из известных виджетов Avito "
-              "(hCaptcha/GeeTest/internal) не появился за 15с — либо это другая "
-              "страница блокировки, либо разметка изменилась.")
+        print("  -> капча/блокировка есть, но виджета не видно за 15с. "
+              "Скорее всего это другая версия страницы (например мобильная).")
+        try:
+            from pathlib import Path
+            out = Path(__file__).resolve().parent / "data" / "unknown_block.html"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(page.content(), encoding="utf-8")
+            print(f"  -> страница сохранена: {out} — по ней добавим поддержку")
+        except Exception:
+            pass
         return False
 
     solver = _get_solver()
